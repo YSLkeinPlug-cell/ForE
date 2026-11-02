@@ -15,6 +15,8 @@ Erfolg bedeutet: **Erweiterung aktiviert** und **Hintergrundagent bereit**. Ansc
 
 ## Wenn weiter ein Fehler erscheint
 
+**Xcode-Fehler `Cannot find 'SMAppServiceErrorDomain' in scope`:** Das aktuelle ZIP korrigiert beide Stellen in `SafariProtection.swift`. Zum Aktualisieren eines bereits geöffneten Projekts an beiden Stellen `failure.domain == SMAppServiceErrorDomain` durch `failure.domain == "SMAppServiceErrorDomain"` ersetzen und erneut bauen. Die Anführungszeichen sind erforderlich. So wird die von `NSError` gelieferte Fehlerdomain verglichen, ohne das in älteren SDKs fehlende Konstantensymbol zu verwenden. Ein Xcode-Update oder ein höheres macOS-Mindestziel ist für diese Korrektur nicht nötig.
+
 Die neue Meldung enthält bei Registrierungsfehlern die Fehlerdomain, Fehlernummer und den Pfad der tatsächlich laufenden App. Diese vollständige Meldung für die weitere Diagnose verwenden.
 
 Die Dienstdatei im installierten App-Paket lässt sich ohne Änderungen prüfen:

@@ -1,6 +1,6 @@
 --- a/ForE/Documentation/Safari-Setup.md
 +++ b/ForE/Documentation/Safari-Setup.md
-@@ -40,6 +40,30 @@
+@@ -40,6 +40,32 @@
  
  Den Agent nicht aus einem später gelöschten Build-Ordner laufen lassen. Beende eine Sitzung und prüfe die Freigabe, bevor du die App ersetzt. Falls nach einer neuen Signierung bzw. einem Umzug der Dienst nicht mehr startet, den alten Hintergrundeintrag in den macOS-Anmeldeobjekten prüfen und die Einrichtung aus der neuen App erneut durchführen. Eine noch registrierte alte Kopie darf nicht parallel dieselbe App Group beschreiben.
  
@@ -26,12 +26,14 @@
 +
 +Fehlt die Dienstdatei, hilft das Verschieben derselben unvollständigen App nicht: Dann muss das vollständige Schema neu gebaut werden. Keine Plist nachträglich in die signierte App kopieren, da das die Signatur beschädigt. Für diese Reparatur ist kein globales `sfltool resetbtm` erforderlich.
 +
++**Falls Xcode `Cannot find 'SMAppServiceErrorDomain' in scope` meldet:** Die aktuelle Fassung vergleicht an beiden Stellen `failure.domain` mit dem String `"SMAppServiceErrorDomain"`. Die vorherige Fassung hat stattdessen das in älteren SDKs fehlende Konstantensymbol ohne Anführungszeichen verwendet. In einem bestehenden Projekt beide Vergleiche entsprechend ändern und erneut bauen. Dafür weder das Mindestziel macOS 13 erhöhen noch Benutzerfreigaben umgehen. Der Vergleich bleibt auf dieselbe Fehlerdomain und dieselben Fehlercodes beschränkt.
++
 +Grundlagen: [Apple: Statuswerte](https://developer.apple.com/documentation/servicemanagement/smappservice/status-swift.enum), [Apple: Registrierung](https://developer.apple.com/documentation/servicemanagement/smappservice/register%28%29). Das gezielte Entfernen vor einer erneuten Registrierung bei veralteten Einträgen wird auch in den [Karabiner-Entwicklungsnotizen](https://github.com/pqrs-org/Karabiner-Elements/blob/main/DEVELOPMENT.md#macos-service-management) beschrieben; die dortigen Beobachtungen betreffen Daemons und beweisen nicht die konkrete Ursache auf jedem Mac.
 +
  ## Manuelle Freigabe und Deinstallation
  
  **Falls Safari nach Sitzungsende blockiert bleibt:** In **Safari → Einstellungen → Erweiterungen** **ForE Safari-Schutz** ausschalten und die Website neu laden. Dadurch werden dessen gespeicherte Regeln nicht mehr angewendet. Andere Inhaltsblocker werden von ForE nicht verändert. Der Hosts-Abschnitt läuft davon unabhängig durch den Root-Helper aus.
-@@ -60,5 +84,6 @@
+@@ -60,5 +86,6 @@
  4. Vorzeitigen Abbruch, Ruhezustand über das Ende hinaus und Neustart während einer Sitzung testen.
  5. Erweiterung deaktivieren, Agent im Hintergrund nicht erlauben und eine falsche App Group testen: Bei gewünschtem Safari-Schutz darf keine neue Sitzung unbemerkt als erfolgreich geschützt starten.
  6. Einen externen Reload-Fehler bzw. nicht erreichbaren Agenten simulieren. Fehleranzeige und manuelle Freigabe über die Safari-Erweiterung prüfen.
@@ -88,7 +90,7 @@
              guard registrationStatus == .enabled else {
                  if registrationStatus == .requiresApproval {
                      throw SafariProtectionError.backgroundApprovalRequired
-@@ -193,6 +200,89 @@
+@@ -193,6 +200,91 @@
              setupMessage = error.localizedDescription
              throw error
          }
@@ -127,7 +129,9 @@
 +                }
 +            } catch {
 +                let failure = error as NSError
-+                guard failure.domain == SMAppServiceErrorDomain,
++                // Older SDKs do not expose the named error-domain constant.
++                // Compare NSError's domain string without linking that symbol.
++                guard failure.domain == "SMAppServiceErrorDomain",
 +                      failure.code == kSMErrorJobNotFound else {
 +                    throw registrationFailure(error, operation: "Alte Registrierung entfernen; erster Versuch: \(describe(firstError))")
 +                }
@@ -148,7 +152,7 @@
 +    private func requiresApproval(_ error: Error, service: SMAppService) -> Bool {
 +        let failure = error as NSError
 +        return service.status == .requiresApproval
-+            || (failure.domain == SMAppServiceErrorDomain && failure.code == kSMErrorLaunchDeniedByUser)
++            || (failure.domain == "SMAppServiceErrorDomain" && failure.code == kSMErrorLaunchDeniedByUser)
 +    }
 +
 +    private func validateAgentBundle() throws {
