@@ -1,4 +1,4 @@
-# Safari-/Privat-Relay-Einrichtung: Timeout und Neustart beheben
+# Safari-/Privat-Relay-Einrichtung: Dienststart und Regelbestätigung beheben
 
 Das korrigierte Quellprojekt liegt in **ForE-Safari.zip** in diesem Branch. Es enthält außerdem die bisherigen Korrekturen für Dienstregistrierung und AppKit aus dem Safari-Fix-Branch. `main` enthält weiterhin die ältere App ohne Safari-Dienst.
 
@@ -10,6 +10,14 @@ Das korrigierte Quellprojekt liegt in **ForE-Safari.zip** in diesem Branch. Es e
 4. Diese App aus Programme öffnen, Safari starten und die ForE-Erweiterung aktivieren. In ForE **Einstellungen → Safari-Schutz mit Privat-Relay → Hintergrundagent einrichten** wählen. Gegebenenfalls die macOS-Hintergrundfreigabe erlauben. Anschließend eine kurze Sitzung samt Freigabe bei geschlossener Haupt-App testen.
 
 Das ZIP ist ein Xcode-Quellprojekt; es enthält keine fertig signierte App.
+
+## Ergänzung für fehlenden Agentstatus und Hauptthread-Warnungen
+
+Die vorherige Fassung konnte noch vor dem ersten Heartbeat im Safari-Aufruf festhängen. Timer und Status starteten erst danach. Jetzt werden der erste Status und der Timer vor dem Safari-Aufruf eingerichtet; SafariServices hat eine eigene Request-Queue. Die Oberfläche führt Service-Management und Containerzugriffe außerhalb des Hauptthreads aus und liest einen veröffentlichten Registrierungsstatus. Ein fehlender Prozessstatus erhält eine eigene Diagnose, statt erneut nur zur Einrichtung aufzufordern.
+
+Das App-Target deaktiviert Debug-Dylib-Unterstützung ausdrücklich für den eigenständigen launchd-Start. App und Erweiterung haben Build-Version **2**. Nach dem Neubau Xcode stoppen, die vollständige neue App nach Programme kopieren und dort den Agenten erneut einrichten.
+
+Für den separaten Hintergrundprozess liefert die macOS-App **Konsole** mit dem Filter **SafariAgent** Start- und Initialisierungsfehler. Die Xcode-Konsole der Haupt-App ist kein vollständiges Agentprotokoll. Die gezeigten generischen Hauptthread-/CGS-Warnungen allein bestimmen den konkreten Mac-Fehler nicht.
 
 ## Korrektur
 
@@ -24,6 +32,6 @@ Das ZIP ist ein Xcode-Quellprojekt; es enthält keine fertig signierte App.
 
 Regressionstests verwenden feste Zeitwerte: Erfolg nach 20 Sekunden, fehlender Callback, verspätete Antworten, Wiederholungen, Freigabe nach Fehlern und passende Erweiterungsnachweise. Der neue GitHub-Workflow entpackt das tatsächliche ZIP, führt die Swift-Tests einschließlich der vorhandenen WebKit-Kompilierungstests aus und baut Debug und Release ohne Signierung.
 
-Lokal ausgeführt: Swift 6.0.3 unter Linux, Paket-Build und **42 XCTest-Tests bestanden**, davon 20 Safari-Tests. Zusätzlich wurden `SafariAgent.swift` und `SafariProtection.swift` erfolgreich syntaktisch geparst. Die zwei WebKit-Tests werden unter Linux nicht ausgeführt; Apple-Frameworks lassen sich dort nicht vollständig bauen oder typprüfen. Der macOS-GitHub-Workflow ist vorbereitet, wurde aber noch nicht ausgeführt.
+Lokal ausgeführt: Swift 6.0.3 unter Linux, Paket-Build und **45 XCTest-Tests bestanden**. Drei neue Scheduler-Tests prüfen unter anderem, dass ein absichtlich blockierter Request die Heartbeats und Statusantworten nicht anhält. Zusätzlich wurden `SafariAgent.swift` und `SafariProtection.swift` erfolgreich syntaktisch geparst. Ein zusätzlicher Typcheck mit kleinen Ersatzdefinitionen für nicht verfügbare Apple-APIs prüft die Swift-Actor-/UI-Struktur, ersetzt jedoch keinen echten macOS-SDK-Build. Die zwei WebKit-Tests werden unter Linux nicht ausgeführt. Der vorige GitHub-macOS-Job wurde vor der Ausführung abgebrochen; er liefert keinen Build-Nachweis.
 
 Die persönliche Signierung, Service-Management-Registrierung und echte Safari-Funktion einschließlich Privat-Relay müssen auf dem Mac geprüft werden. Die Korrektur behebt nachweisbare Fehler im Ablauf; aus dem Screenshot allein lässt sich die Ursache des ausbleibenden Safari-Callbacks nicht bestimmen.
