@@ -1,0 +1,556 @@
+diff --git a/Documentation/Safari-Focus-Fix.md b/Documentation/Safari-Focus-Fix.md
+new file mode 100644
+--- /dev/null
++++ b/Documentation/Safari-Focus-Fix.md
+@@ -0,0 +1,58 @@
++# Safari-Freigabe bei ausgeschaltetem Fokus · Build 3
++
++Diese Fassung korrigiert die Safari-Variante von ForE: Nach dem Ausschalten oder Ablauf des Fokus soll die aktivierte Erweiterung keine Websites sperren. Während einer Sitzung bleiben ausschließlich die ausgewählten Domains und ihre bisherigen `www`-Varianten gesperrt.
++
++## Ursache und Änderung
++
++Die bisherige inaktive Regelliste enthielt eine Regel mit `url-filter: "^$"` und `action.type: "block"`. In Foundation passt dieser Ausdruck nur auf einen leeren String. WebKits Content-Blocker-Compiler erkennt jedoch Filter ohne ein erforderliches Zeichen als allgemeinen Treffer. Die vermeintlich wirkungslose Sperrregel konnte dadurch alle Seiten blockieren. Der erfolgreiche Compile-Callback erkannte diesen Fehler nicht; auch der bisherige Foundation-Regextest deckte ihn nicht ab.
++
++Die inaktive Regelliste enthält jetzt genau diese Regel:
++
++```json
++[
++  {
++    "trigger": {
++      "url-filter": ".*",
++      "url-filter-is-case-sensitive": false
++    },
++    "action": {
++      "type": "ignore-previous-rules"
++    }
++  }
++]
++```
++
++Diese Aktion blockiert keine Anfrage. Sie betrifft nur ForEs eigene Regelliste. Andere Safari-Inhaltsblocker behalten ihre Wirkung. Ein leeres Array wird weiterhin vermieden, weil WebKit es zurückweist.
++
++Die Änderung greift auch beim ersten Start ohne Sitzung, beim Ablauf sowie bei fehlender oder unlesbarer gemeinsamer Konfiguration. Die Regelerzeugung einer aktiven Sitzung und deren Domainprüfung bleiben erhalten. App und Erweiterung erhalten Build-Version 3. Der Hintergrundagent muss die neue Liste weiterhin erfolgreich an Safari übergeben; kompilierte Regeln besitzen keinen eigenen Ablauf-Timer.
++
++Technischer Hintergrund in WebKit: [`URLFilterParser::finalize`](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/contentextensions/URLFilterParser.cpp) klassifiziert Filter ohne erforderliches Zeichen als `MatchesEverything`; [`ContentExtensionCompiler`](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/contentextensions/ContentExtensionCompiler.cpp) übernimmt diese als universelle Aktionen.
++
++## Jetzt wieder surfen
++
++Bis die neue App installiert ist: Unter **Safari → Einstellungen → Erweiterungen** den **ForE Safari-Schutz** ausschalten und die betroffene Website neu laden.
++
++## Korrigierte App übernehmen
++
++1. Eine laufende Sitzung beenden. ForE schließen, einen laufenden Xcode-Debug-Start stoppen und Safari vollständig mit **⌘Q** beenden.
++2. Im entpackten Projekt **ForE.xcodeproj** öffnen. Die eigenen Team-, Bundle-ID- und App-Group-Einstellungen aus dem bisherigen Projekt übernehmen. App und Erweiterung müssen dieselbe berechtigte App Group verwenden. Details stehen im [Safari-Setup](Safari-Setup.md).
++3. **Product → Clean Build Folder** ausführen und das vollständige Schema **ForE** bauen.
++4. Unter **Products → ForE.app → Show in Finder** die neu gebaute vollständige App nach **Programme** kopieren und die bisherige App ersetzen. Anschließend genau diese installierte Kopie öffnen.
++5. Safari öffnen, den **ForE Safari-Schutz** aktivieren und in ForE **Einstellungen → Hintergrundagent einrichten** wählen. Dadurch wird der alte Agent durch die aktuelle Version ersetzt und die inaktive Regelliste neu geladen. Eine erforderliche macOS-Hintergrundfreigabe bestätigen und auf den bereiten Status warten.
++
++Für ein bereits persönlich konfiguriertes Projekt liegt zusätzlich ein Patch bei. Im Projektordner erst `git apply --check /Pfad/ForE-II-Safari-Fokus-Fix.patch` ausführen und anschließend denselben Patch mit `git apply` übernehmen. Das vollständige ZIP enthält alle Quelltexte; der Patch ist gegen den unten genannten Ausgangsstand erstellt.
++
++## Auf dem Mac prüfen
++
++1. Erweiterung aktiviert lassen, Fokus ausgeschaltet: `gesetze.jurafuchs.de` und eine Domain aus der Sperrliste müssen erreichbar sein.
++2. Fokus starten: Eine ausgewählte Domain muss blockiert werden; `gesetze.jurafuchs.de` muss erreichbar bleiben, sofern es nicht in der Sperrliste steht.
++3. Fokus vorzeitig beenden: Beide Domains müssen nach bestätigter Freigabe wieder erreichbar sein, während die Erweiterung aktiviert bleibt.
++4. Eine kurze Sitzung automatisch auslaufen lassen und dabei ForE mit **⌘Q** schließen: Nach der Freigabe durch den Hintergrundagenten müssen beide Domains wieder erreichbar sein.
++
++Jeden Aufruf frisch laden. Der Agent prüft den Sitzungszustand alle drei Sekunden; Safari muss den neuen Regelsatz zusätzlich übernehmen. Bleibt die Sperre bestehen, zur sofortigen Freigabe die ForE-Erweiterung ausschalten und den Agentstatus prüfen.
++
++## Ausgangsstand und Prüfung
++
++Grundlage ist `ForE-Safari.zip` aus `YSLkeinPlug-cell/ForE`, Zweig `fix/safari-rule-confirmation`, Commit `0e21a430e8c8c2a83dbb65caaa310b68c52b11a9` (Archiv-Blob `594565f76931dcbd49549c40118a8c54c004d86a`). Es handelt sich um das Safari-Projekt mit Xcode-Projekt, Hosts-Helper und Safari-Agent.
++
++Unter Linux mit Swift 5.9.2 bestehen **45 Tests ohne Fehler**; alle **25 Swift-Dateien** bestehen die Syntaxprüfung. Der aktualisierte Regressionstest schlägt mit dem alten Regelerzeuger in allen sieben inaktiven Konfigurationen fehl und besteht mit der Korrektur. Ein zusätzlicher macOS-Test prüft echte WKWebView-Navigation in der Reihenfolge inaktiv → aktiv → inaktiv gegen einen lokalen HTTP-Server; er wurde hier nicht ausgeführt. Der genaue Prüfstand steht in `Pruefstand.txt`. Ein vollständiger macOS-Build, die persönliche Signierung sowie Safari mit aktivierter Erweiterung und der Hintergrundagent benötigen einen Mac. Eine hier erfolgreiche Prüfung der Kernlogik ersetzt diese Prüfung nicht.
+diff --git a/Documentation/Safari-Setup.md b/Documentation/Safari-Setup.md
+--- a/Documentation/Safari-Setup.md
++++ b/Documentation/Safari-Setup.md
+@@ -31,7 +31,7 @@
+ - Alle drei Sekunden prüft der Agent den root-eigenen Sitzungsstatus. Er schreibt Domainliste, Sitzungs-ID und Frist atomar in die gemeinsame App Group und ruft `SFContentBlockerManager.reloadContentBlocker` auf.
+ - Die sandboxed Erweiterung liest nur die gemeinsame App Group und liefert WebKit-kompatibles JSON. Sie benötigt keine Netzwerkfreigabe und liest keine Seiteninhalte. Ein Nachweis hält fest, welche Konfiguration sie tatsächlich gelesen hat.
+ - Erst nach erfolgreicher Safari-Kompilierung und passendem Erweiterungsnachweis bestätigt der Agent die aktive Sitzung. Die App prüft diese Bestätigung nach dem Hosts-Start. Fehlt sie, wird eine vorzeitige Systemfreigabe angefragt und der Fehler angezeigt; dafür kann macOS erneut Administratorrechte verlangen.
+-- Bei Ablauf, Abbruch oder fehlendem/ungültigem Systemstatus erzeugt der Agent eine inaktive Regelliste. Eine gültige `^$`-Regel trifft keine Ressourcen-URL; WebKit akzeptiert dagegen kein leeres Regelarray. Fehlgeschlagene Aktualisierungen werden erneut versucht.
++- Bei Ablauf, Abbruch oder fehlendem/ungültigem Systemstatus erzeugt der Agent eine inaktive Regelliste. Die Liste enthält genau eine Regel mit `url-filter: ".*"` und der nicht blockierenden Aktion `ignore-previous-rules`. WebKit akzeptiert kein leeres Regelarray und kann die frühere `^$`-Sperrregel als allgemeinen Treffer behandeln. Die neue Aktion betrifft ausschließlich ForEs eigene Regelliste. Fehlgeschlagene Aktualisierungen werden erneut versucht.
+ - Kompilierte Regeln haben **keinen eingebauten Timer**. Die Prüfung der Ablaufzeit im Erweiterungscode ersetzt deshalb den Agenten nicht. Der `KeepAlive`-Job muss auch bei geschlossener App aktiv bleiben. Nach Ab-/Anmeldung, Neustart oder Aufwachen wird die Frist erneut geprüft. Ein ausbleibender Safari-API-Callback wird als Fehler gemeldet; der Agent bleibt aktiv und wiederholt die Aktualisierung nach einer Pause.
+ 
+ Die Hosts-Zeitstatistik behält ihre bisherige Bedeutung. Sie ist kein Nachweis, dass in jedem Moment jeder Browser blockiert war. Wird die Erweiterung oder der Agent während einer Sitzung manuell deaktiviert, kann ForE dies nicht verhindern.
+@@ -44,7 +44,7 @@
+ 
+ Die Meldung `This method should not be called on the main thread` nennt ohne Stacktrace nicht den verursachenden Aufruf. Ebenso ist `CGSWindowShmemCreateWithPort failed` allein kein Nachweis der Fehlerursache. Die Korrektur behebt den gefundenen Startablauf und trennt nicht reagierende Safari-Aufrufe vom Status-Timer.
+ 
+-Das Target **ForE** setzt **Enable Debug Dylib Support** ausdrücklich auf **No**, weil dieselbe Binärdatei auch von launchd gestartet wird. Apple verwendet diese Einstellung ebenfalls für das launchd-Programm im [SMAppService-Beispiel](https://developer.apple.com/forums/thread/802443). App und Erweiterung tragen jetzt Build-Version **2**. Das ist eine Kompatibilitätseinstellung und keine nachgewiesene Diagnose des jeweiligen Macs.
++Das Target **ForE** setzt **Enable Debug Dylib Support** ausdrücklich auf **No**, weil dieselbe Binärdatei auch von launchd gestartet wird. Apple verwendet diese Einstellung ebenfalls für das launchd-Programm im [SMAppService-Beispiel](https://developer.apple.com/forums/thread/802443). App und Erweiterung tragen jetzt Build-Version **3**, einschließlich des [Safari-Freigabe-Fixes](Safari-Focus-Fix.md). Das ist eine Kompatibilitätseinstellung und keine nachgewiesene Diagnose des jeweiligen Macs.
+ 
+ Nach dem Update das Schema vollständig bereinigen und neu bauen, Xcode stoppen, die gesamte gebaute App nach Programme kopieren und genau diese Kopie öffnen. Anschließend den Hintergrundagenten erneut einrichten. Weder eine erforderliche Benutzerfreigabe noch die Regelbestätigung werden übersprungen.
+ 
+@@ -125,4 +125,4 @@
+ 6. Einen externen Reload-Fehler bzw. nicht erreichbaren Agenten simulieren. Fehleranzeige und manuelle Freigabe über die Safari-Erweiterung prüfen.
+ 7. Die korrigierte Registrierung auf einem Mac getrennt prüfen: erste Einrichtung ohne alten Eintrag; erneute Einrichtung aus einer verschobenen/ersetzten App bei `.notFound`; kontrollierter Neustart bei `.enabled` und unveränderte Freigabeanforderung bei `.requiresApproval`; fehlende eingebettete Dienstdatei. Nur die explizite Einrichtung darf eine Registrierung verändern. Nach einer Reparatur müssen weiterhin ein frischer Agentstatus und eine bestätigte Regelaktualisierung eintreffen. Fehler beim Entfernen oder Registrieren dürfen nicht als Erfolg erscheinen.
+ 
+-**Hier nicht als ausgeführt ausweisen:** Die Cloud-Umgebung ist Linux. Tests prüfen dort die Foundation-Regelerzeugung. Zwei zusätzliche XCTest-Tests kompilieren aktive und inaktive Regeln auf einem Mac tatsächlich mit `WKContentRuleListStore`; Safari-Erweiterung, Privat-Relay, Signierung, App-Group-Berechtigung und Hintergrundregistrierung benötigen darüber hinaus diese manuellen Mac-Tests.
++**Hier nicht als ausgeführt ausweisen:** Die Cloud-Umgebung ist Linux. Tests prüfen dort die Foundation-Regelerzeugung. Drei zusätzliche XCTest-Tests kompilieren aktive und inaktive Regeln auf einem Mac mit `WKContentRuleListStore` und prüfen echte WKWebView-Navigation vor und nach einer aktiven Sperre gegen einen lokalen HTTP-Testserver; Safari-Erweiterung, Privat-Relay, Signierung, App-Group-Berechtigung und Hintergrundregistrierung benötigen darüber hinaus diese manuellen Mac-Tests.
+diff --git a/ForE.xcodeproj/project.pbxproj b/ForE.xcodeproj/project.pbxproj
+--- a/ForE.xcodeproj/project.pbxproj
++++ b/ForE.xcodeproj/project.pbxproj
+@@ -742,7 +742,7 @@
+ 			buildSettings = {
+ 				APPLICATION_EXTENSION_API_ONLY = YES;
+ 				CODE_SIGN_ENTITLEMENTS = SafariBlocker/SafariBlocker.entitlements;
+-				CURRENT_PROJECT_VERSION = 2;
++				CURRENT_PROJECT_VERSION = 3;
+ 				MARKETING_VERSION = 1.0;
+ 				ENABLE_APP_SANDBOX = YES;
+ 				ENABLE_HARDENED_RUNTIME = YES;
+@@ -766,7 +766,7 @@
+ 				CODE_SIGN_ENTITLEMENTS = ForE/Resources/ForE.entitlements;
+ 				ENABLE_DEBUG_DYLIB = NO;
+ 				COMBINE_HIDPI_IMAGES = YES;
+-				CURRENT_PROJECT_VERSION = 2;
++				CURRENT_PROJECT_VERSION = 3;
+ 				ENABLE_APP_SANDBOX = NO;
+ 				ENABLE_HARDENED_RUNTIME = YES;
+ 				GENERATE_INFOPLIST_FILE = NO;
+@@ -859,7 +859,7 @@
+ 				CODE_SIGN_ENTITLEMENTS = ForE/Resources/ForE.entitlements;
+ 				ENABLE_DEBUG_DYLIB = NO;
+ 				COMBINE_HIDPI_IMAGES = YES;
+-				CURRENT_PROJECT_VERSION = 2;
++				CURRENT_PROJECT_VERSION = 3;
+ 				ENABLE_APP_SANDBOX = NO;
+ 				ENABLE_HARDENED_RUNTIME = YES;
+ 				GENERATE_INFOPLIST_FILE = NO;
+@@ -919,7 +919,7 @@
+ 			buildSettings = {
+ 				APPLICATION_EXTENSION_API_ONLY = YES;
+ 				CODE_SIGN_ENTITLEMENTS = SafariBlocker/SafariBlocker.entitlements;
+-				CURRENT_PROJECT_VERSION = 2;
++				CURRENT_PROJECT_VERSION = 3;
+ 				MARKETING_VERSION = 1.0;
+ 				ENABLE_APP_SANDBOX = YES;
+ 				ENABLE_HARDENED_RUNTIME = YES;
+diff --git a/Pruefstand.txt b/Pruefstand.txt
+new file mode 100644
+--- /dev/null
++++ b/Pruefstand.txt
+@@ -0,0 +1,29 @@
++ForE II · Safari-Fokus-Fix · Build 3
++Prüfdatum: 02.11.2026
++
++Ausgangsstand:
++ForE-Safari.zip, YSLkeinPlug-cell/ForE,
++fix/safari-rule-confirmation@0e21a430e8c8c2a83dbb65caaa310b68c52b11a9
++Archiv-Blob: 594565f76931dcbd49549c40118a8c54c004d86a
++
++Ausgeführt in dieser Linux-Umgebung:
++- swift test mit Swift 5.9.2: 45 Tests, 0 Fehler.
++- swiftc -frontend -parse für alle 25 Swift-Dateien: erfolgreich.
++- Regression gegen den unveränderten alten SafariRules.swift-Regelerzeuger:
++  Der aktualisierte Inaktiv-Test schlägt in sieben Konfigurationen mit
++  insgesamt 14 Assertions fehl. Mit dem korrigierten Regelerzeuger besteht er.
++
++Zusätzliche Paketprüfung:
++- Patch lässt sich gegen das ursprüngliche Archiv anwenden.
++- ZIP-Inhalt und Patch ergeben identische Quelltexte.
++- XML-Plists, Entitlements, Xcode-Schema und Asset-JSON sind lesbar.
++- App und Erweiterung tragen in Debug/Release Build-Version 3.
++
++Auf einem Mac noch auszuführen:
++- Vollständiger Xcode-Build, native Typprüfung der WebKit-/Network-Testteile.
++- Drei WebKit-Tests, darunter echte lokale Navigation inaktiv/aktiv/inaktiv.
++- Persönliche Signierung, App Group, Safari-Erweiterung und Hintergrundagent.
++- Manuelle Freigabe bei Abbruch und Ablauf mit aktivierter Erweiterung.
++
++Dieses Paket enthält Quellcode, keine fertig signierte macOS-App.
++Update-Anleitung: Documentation/Safari-Focus-Fix.md
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1,6 +1,10 @@
+ # ForE 🌱
+ 
+ Eine native, deutschsprachige Fokus-App für **macOS 13.0 und neuer**, geschrieben in **Swift und SwiftUI**. Wähle ablenkende Websites, starte eine zeitlich begrenzte Sitzung und lass deinen Fokuswald wachsen.
++
++## Safari-Freigabe korrigiert (Build 3)
++
++Diese Fassung behebt die pauschale Safari-Sperre bei ausgeschaltetem Fokus und weiterhin aktivierter Erweiterung. Inaktive Regeln verwenden jetzt die nicht blockierende Aktion `ignore-previous-rules`. Anleitung zum Update, Ursache und Prüfstand: [Safari-Fokus-Fix](Documentation/Safari-Focus-Fix.md).
+ 
+ ## Auf deinem Mac starten
+ 
+@@ -74,7 +78,7 @@
+ swift test
+ ```
+ 
+-Alternativ in Xcode **⌘U** verwenden. Die automatisierten Tests verändern keine Systemdateien und benötigen keine Administratorrechte. Die Safari-Tests prüfen zusätzlich auf macOS die echte WebKit-Regelkompilierung und entfernen ihre Testlisten wieder. Der App-Start allein installiert keinen Systemhelfer oder Hintergrundagenten. Für reine CI-Builds ohne Team kann `CODE_SIGNING_ALLOWED=NO` an `xcodebuild` übergeben werden; ein solcher Build ist keine einsatzbereite Safari-Installation.
++Alternativ in Xcode **⌘U** verwenden. Die automatisierten Tests verändern keine Systemdateien und benötigen keine Administratorrechte. Die Safari-Tests prüfen zusätzlich auf macOS die echte WebKit-Regelkompilierung und einen Wechsel inaktiv → aktiv → inaktiv mit einem WKWebView und einem lokalen HTTP-Testserver. Temporäre Testlisten werden wieder entfernt. Der App-Start allein installiert keinen Systemhelfer oder Hintergrundagenten. Für reine CI-Builds ohne Team kann `CODE_SIGNING_ALLOWED=NO` an `xcodebuild` übergeben werden; ein solcher Build ist keine einsatzbereite Safari-Installation.
+ 
+ Der mitgelieferte GitHub-Actions-Workflow baut die App und führt die Logiktests auf einem macOS-Runner aus, sobald die Änderungen gepusht werden. Er wurde in dieser Sitzung nicht ausgeführt. Auch ein erfolgreicher CI-Build ersetzt nicht die manuellen Sperrtests auf deinem Mac.
+ 
+diff --git a/Sources/ForECore/SafariRules.swift b/Sources/ForECore/SafariRules.swift
+--- a/Sources/ForECore/SafariRules.swift
++++ b/Sources/ForECore/SafariRules.swift
+@@ -48,10 +48,12 @@
+                 return [Rule(filter: prefix + "[/?#]"), Rule(filter: prefix + "$")]
+             }
+         } else {
+-            // WebKit rejects an empty rule array (JSONContainsNoRules). Every
+-            // serialized resource URL is nonempty, so this valid ^$ filter never
+-            // matches a request. Disable even when stale domains are malformed.
+-            rules = [Rule(filter: "^$")]
++            // WebKit rejects an empty rule array (JSONContainsNoRules), and
++            // treats zero-character filters such as ^$ as universal matches.
++            // Use an explicitly nonblocking action instead of a block rule
++            // that relies on regex behavior. This affects only this rule list.
++            // Disable even when stale domains are malformed.
++            rules = [Rule(filter: ".*", action: .ignorePreviousRules)]
+         }
+         let encoder = JSONEncoder()
+         encoder.outputFormatting = [.sortedKeys]
+@@ -60,9 +62,12 @@
+ 
+     private struct Rule: Encodable {
+         let trigger: Trigger
+-        let action = Action()
++        let action: Action
+ 
+-        init(filter: String) { trigger = Trigger(urlFilter: filter) }
++        init(filter: String, action: ActionType = .block) {
++            trigger = Trigger(urlFilter: filter)
++            self.action = Action(type: action)
++        }
+     }
+ 
+     private struct Trigger: Encodable {
+@@ -76,6 +81,11 @@
+     }
+ 
+     private struct Action: Encodable {
+-        let type = "block"
++        let type: ActionType
++    }
++
++    private enum ActionType: String, Encodable {
++        case block
++        case ignorePreviousRules = "ignore-previous-rules"
+     }
+ }
+diff --git a/Tests/ForECoreTests/SafariRulesTests.swift b/Tests/ForECoreTests/SafariRulesTests.swift
+--- a/Tests/ForECoreTests/SafariRulesTests.swift
++++ b/Tests/ForECoreTests/SafariRulesTests.swift
+@@ -3,6 +3,7 @@
+ @testable import ForECore
+ #if canImport(WebKit)
+ import WebKit
++import Network
+ #endif
+ 
+ final class SafariRulesTests: XCTestCase {
+@@ -13,14 +14,22 @@
+         return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+     }
+ 
+-    private func matches(_ url: String, in rules: [[String: Any]]) throws -> Bool {
+-        try rules.contains { rule in
++    private func isBlocked(_ url: String, in rules: [[String: Any]]) throws -> Bool {
++        var blocked = false
++        for rule in rules {
+             let trigger = try XCTUnwrap(rule["trigger"] as? [String: Any])
+             let filter = try XCTUnwrap(trigger["url-filter"] as? String)
+             let sensitive = trigger["url-filter-is-case-sensitive"] as? Bool ?? false
+             let regex = try NSRegularExpression(pattern: filter, options: sensitive ? [] : [.caseInsensitive])
+-            return regex.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil
+-        }
++            guard regex.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil else { continue }
++            let action = try XCTUnwrap(rule["action"] as? [String: Any])
++            switch try XCTUnwrap(action["type"] as? String) {
++            case "block": blocked = true
++            case "ignore-previous-rules": blocked = false
++            default: XCTFail("Unexpected content-blocker action")
++            }
++        }
++        return blocked
+     }
+ 
+     func testActiveRulesBlockExactDomainAndWWWOverHTTPAndHTTPS() throws {
+@@ -30,7 +39,7 @@
+                     "https://youtube.com:8443/watch", "http://www.youtube.com:80", "https://youtube.com./",
+                     "https://user:password@youtube.com/", "https://user%40name@www.youtube.com:8443/path",
+                     "https://@youtube.com/"] {
+-            XCTAssertTrue(try matches(url, in: generated), url)
++            XCTAssertTrue(try isBlocked(url, in: generated), url)
+         }
+     }
+ 
+@@ -41,28 +50,39 @@
+                     "https://www.www.youtube.com/", "https://other.org/?url=https://youtube.com/",
+                     "ftp://youtube.com/", "https://youtube.com:abc/", "https://youtube.com:80.evil.org/",
+                     "https://youtube.comevil/", "https://youtube.com../"] {
+-            XCTAssertFalse(try matches(url, in: generated), url)
++            XCTAssertFalse(try isBlocked(url, in: generated), url)
+         }
+     }
+ 
+     func testExplicitSubdomainDoesNotBlockParentOrSiblings() throws {
+         let generated = try rules(["m.youtube.com"])
+-        XCTAssertTrue(try matches("https://m.youtube.com/", in: generated))
+-        XCTAssertTrue(try matches("https://www.m.youtube.com/", in: generated))
+-        XCTAssertFalse(try matches("https://youtube.com/", in: generated))
+-        XCTAssertFalse(try matches("https://other.youtube.com/", in: generated))
++        XCTAssertTrue(try isBlocked("https://m.youtube.com/", in: generated))
++        XCTAssertTrue(try isBlocked("https://www.m.youtube.com/", in: generated))
++        XCTAssertFalse(try isBlocked("https://youtube.com/", in: generated))
++        XCTAssertFalse(try isBlocked("https://other.youtube.com/", in: generated))
+     }
+ 
+     func testEmptyMissingAndExpiredConfigurationsRemainNonblocking() throws {
+         let inputs: [([String], Date?)] = [([], now.addingTimeInterval(600)), (["youtube.com"], nil),
+                                          (["youtube.com"], now), (["youtube.com"], now.addingTimeInterval(-1)),
+-                                         (["bad\ninput"], now.addingTimeInterval(-1))]
++                                         (["bad\ninput"], now.addingTimeInterval(-1)),
++                                         (Array(repeating: "youtube.com", count: 201), nil),
++                                         (Array(repeating: "bad\ninput", count: 201), now)]
+         for (domains, deadline) in inputs {
+             let data = try SafariRules.jsonData(domains: domains, activeUntil: deadline, now: now)
+             let generated = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+             XCTAssertEqual(generated.count, 1, "WebKit rejects an empty rule list")
+-            for url in ["https://youtube.com/", "http://www.youtube.com/", "https://other.org/", "about:blank", "file:///tmp/file"] {
+-                XCTAssertFalse(try matches(url, in: generated), url)
++            for rule in generated {
++                let action = try XCTUnwrap(rule["action"] as? [String: Any])
++                let trigger = try XCTUnwrap(rule["trigger"] as? [String: Any])
++                XCTAssertEqual(action["type"] as? String, "ignore-previous-rules",
++                               "An inactive configuration must contain no blocking action")
++                XCTAssertEqual(trigger["url-filter"] as? String, ".*")
++            }
++            for url in ["https://youtube.com/", "http://www.youtube.com/", "https://other.org/",
++                        "https://gesetze.jurafuchs.de/gesetz/zpo/281-verweisung-bei-unzustaendigkeit",
++                        "about:blank", "file:///tmp/file"] {
++                XCTAssertFalse(try isBlocked(url, in: generated), url)
+             }
+         }
+     }
+@@ -85,9 +105,9 @@
+ 
+     func testPunycodeAndLiteralDots() throws {
+         let generated = try rules(["xn--bcher-kva.de"])
+-        XCTAssertTrue(try matches("https://xn--bcher-kva.de/books", in: generated))
+-        XCTAssertFalse(try matches("https://xn--bcher-kvaXde/books", in: generated))
+-        XCTAssertFalse(try matches("https://xn--bcher-kva.de.example.org/", in: generated))
++        XCTAssertTrue(try isBlocked("https://xn--bcher-kva.de/books", in: generated))
++        XCTAssertFalse(try isBlocked("https://xn--bcher-kvaXde/books", in: generated))
++        XCTAssertFalse(try isBlocked("https://xn--bcher-kva.de.example.org/", in: generated))
+     }
+ 
+     func testOutputUsesWebKitSupportedRegexSubsetAndBlocksAllResourceTypes() throws {
+@@ -311,28 +331,206 @@
+         try compileWithWebKit(SafariRuleSet(), name: "inactive")
+     }
+ 
++    @MainActor
++    func testWebKitAllowsNavigationBeforeAndAfterAnActiveBlock() throws {
++        // A loopback-only HTTP server makes the test independent of internet,
++        // DNS and external websites. DomainNormalizer intentionally rejects
++        // loopback hosts, so a small explicit block is the positive control.
++        let server = try SafariLoopbackHTTPServer()
++        defer { server.stop() }
++        let ready = expectation(description: "Loopback HTTP server is listening")
++        var address: Result<URL, Error>?
++        server.start { result in
++            DispatchQueue.main.async {
++                address = result
++                ready.fulfill()
++            }
++        }
++        wait(for: [ready], timeout: 5)
++        let baseURL = try XCTUnwrap(address).get()
++
++        let inactiveJSON = try XCTUnwrap(String(data: SafariRuleSet().jsonData(now: now), encoding: .utf8))
++        let inactive = try compiledWebKitList(json: inactiveJSON, name: "navigation-inactive")
++        defer { removeWebKitList(inactive) }
++        let active = try compiledWebKitList(
++            json: #"[{"trigger":{"url-filter":"^http://127[.]0[.]0[.]1:"},"action":{"type":"block"}}]"#,
++            name: "navigation-active-control")
++        defer { removeWebKitList(active) }
++
++        let configuration = WKWebViewConfiguration()
++        configuration.websiteDataStore = .nonPersistent()
++        let webView = WKWebView(frame: .zero, configuration: configuration)
++        let contentController = webView.configuration.userContentController
++        let probe = SafariNavigationProbe()
++        webView.navigationDelegate = probe
++        defer {
++            webView.stopLoading()
++            webView.navigationDelegate = nil
++            contentController.removeAllContentRuleLists()
++        }
++
++        contentController.add(inactive)
++        try navigate(webView, probe: probe, to: baseURL.appendingPathComponent("initial-inactive")).get()
++        XCTAssertEqual(webView.title, SafariLoopbackHTTPServer.pageTitle)
++
++        contentController.removeAllContentRuleLists()
++        contentController.add(active)
++        switch try navigate(webView, probe: probe, to: baseURL.appendingPathComponent("active")) {
++        case .success:
++            XCTFail("The positive control must block the actual HTTP navigation")
++        case .failure(let error):
++            let failure = error as NSError
++            XCTAssertEqual(failure.domain, "WebKitErrorDomain")
++            XCTAssertEqual(failure.code, 104, "WebKit's content-blocker error must cause the failure")
++        }
++
++        contentController.removeAllContentRuleLists()
++        contentController.add(inactive)
++        try navigate(webView, probe: probe, to: baseURL.appendingPathComponent("released")).get()
++        XCTAssertEqual(webView.title, SafariLoopbackHTTPServer.pageTitle)
++    }
++
++    @MainActor
++    private func navigate(_ webView: WKWebView, probe: SafariNavigationProbe, to url: URL) throws -> Result<Void, Error> {
++        let finished = expectation(description: "Navigate to \(url.lastPathComponent)")
++        var result: Result<Void, Error>?
++        probe.completion = {
++            result = $0
++            finished.fulfill()
++        }
++        defer { probe.completion = nil }
++        webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10))
++        wait(for: [finished], timeout: 15)
++        return try XCTUnwrap(result)
++    }
++
+     /// Foundation's regular expression engine accepts constructs that WebKit's
+     /// content-blocker compiler rejects. Exercise the real compiler on macOS.
+     @MainActor
+     private func compileWithWebKit(_ configuration: SafariRuleSet, name: String) throws {
+         let data = try configuration.jsonData(now: now)
+         let json = try XCTUnwrap(String(data: data, encoding: .utf8))
++        let list = try compiledWebKitList(json: json, name: name)
++        removeWebKitList(list)
++    }
++
++    @MainActor
++    private func compiledWebKitList(json: String, name: String) throws -> WKContentRuleList {
+         let identifier = "ForE-SafariRulesTests-\(name)-\(UUID().uuidString)"
+-        let finished = expectation(description: "Compile and remove \(name) WebKit content rule list")
++        let finished = expectation(description: "Compile \(name) WebKit content rule list")
+         let store = try XCTUnwrap(WKContentRuleListStore.default())
++        var compiled: WKContentRuleList?
+         store.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: json) { list, error in
+             XCTAssertNil(error, "WebKit rejected the generated \(name) rules: \(String(describing: error))")
+-            XCTAssertNotNil(list)
+-            guard list != nil else { finished.fulfill(); return }
+-            store.removeContentRuleList(forIdentifier: identifier) { removalError in
+-                XCTAssertNil(removalError, "The temporary compiled rule list should be removed")
+-                finished.fulfill()
+-            }
++            compiled = list
++            finished.fulfill()
+         }
+         wait(for: [finished], timeout: 20)
++        return try XCTUnwrap(compiled)
++    }
++
++    @MainActor
++    private func removeWebKitList(_ list: WKContentRuleList) {
++        let removed = expectation(description: "Remove temporary WebKit content rule list")
++        WKContentRuleListStore.default()?.removeContentRuleList(forIdentifier: list.identifier) { error in
++            XCTAssertNil(error, "The temporary compiled rule list should be removed")
++            removed.fulfill()
++        }
++        wait(for: [removed], timeout: 5)
+     }
+     #endif
+ }
++
++#if canImport(WebKit)
++@MainActor
++private final class SafariNavigationProbe: NSObject, WKNavigationDelegate {
++    var completion: ((Result<Void, Error>) -> Void)?
++
++    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
++        finish(.success(()))
++    }
++
++    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
++        finish(.failure(error))
++    }
++
++    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
++        finish(.failure(error))
++    }
++
++    private func finish(_ result: Result<Void, Error>) {
++        let callback = completion
++        completion = nil
++        callback?(result)
++    }
++}
++
++/// A minimal HTTP fixture restricted to 127.0.0.1 and an ephemeral port.
++/// All listener/connection state is confined to its serial queue.
++private final class SafariLoopbackHTTPServer {
++    static let pageTitle = "ForE loopback test"
++    private let listener: NWListener
++    private let queue = DispatchQueue(label: "ForE.SafariRulesTests.HTTP")
++    private var connections: [NWConnection] = []
++
++    init() throws {
++        let parameters = NWParameters.tcp
++        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
++        listener = try NWListener(using: parameters)
++    }
++
++    func start(ready: @escaping (Result<URL, Error>) -> Void) {
++        var reported = false
++        listener.stateUpdateHandler = { [weak self] state in
++            guard let self, !reported else { return }
++            switch state {
++            case .ready:
++                guard let port = self.listener.port,
++                      let url = URL(string: "http://127.0.0.1:\(port.rawValue)/") else { return }
++                reported = true
++                ready(.success(url))
++            case .failed(let error):
++                reported = true
++                ready(.failure(error))
++            default: break
++            }
++        }
++        listener.newConnectionHandler = { [weak self] connection in
++            guard let self else { connection.cancel(); return }
++            self.connections.append(connection)
++            connection.start(queue: self.queue)
++            self.receiveRequest(on: connection, buffered: Data())
++        }
++        listener.start(queue: queue)
++    }
++
++    func stop() {
++        queue.sync {
++            listener.cancel()
++            connections.forEach { $0.cancel() }
++            connections.removeAll()
++        }
++    }
++
++    private func receiveRequest(on connection: NWConnection, buffered: Data) {
++        connection.receive(minimumIncompleteLength: 1, maximumLength: 16_384) { [weak self] data, _, complete, error in
++            guard let self else { connection.cancel(); return }
++            var request = buffered
++            if let data { request.append(data) }
++            if request.range(of: Data("\r\n\r\n".utf8)) != nil {
++                let body = "<!doctype html><title>\(Self.pageTitle)</title><p>Local response</p>"
++                let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
++                    + "Content-Length: \(body.utf8.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n" + body
++                connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
++            } else if complete || error != nil || request.count > 65_536 {
++                connection.cancel()
++            } else {
++                self.receiveRequest(on: connection, buffered: request)
++            }
++        }
++    }
++}
++#endif
+ 
+ final class SafariAgentSchedulerTests: XCTestCase {
+     func testInitializationPrecedesTheFirstSystemRequestAndRunsOffMainThread() {
