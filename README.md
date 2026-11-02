@@ -4,7 +4,7 @@
 
 Ein nativer macOS-Prototyp für Fokuszeiten, einen wachsenden Wald und lokalen Verlauf. Diese Variante verwendet **die Auszeit von macOS-Bildschirmzeit** statt des früheren Hosts-Datei-Sperrhelfers.
 
-**Status:** Quellcode-Prototyp. Die macOS-Kompilierung und die Bildschirmzeit-Automation müssen auf einem echten Mac geprüft werden. Es liegt keine fertig kompilierte, notarisierte App bei. Die mitgelieferte CI-Konfiguration ist eine ausführbare Prüfung, kein Nachweis eines bereits erfolgreichen Durchlaufs.
+**Status:** Quellcode-Prototyp. [GitHub Actions](https://github.com/YSLkeinPlug-cell/ForE/actions/workflows/macos.yml) prüft den nativen macOS-Build und die Tests. Erfolgreiche Läufe stellen ein lokal ad hoc signiertes App-Bundle als Build-Artefakt bereit. Das Quellcode-Archiv enthält keine kompilierte oder notarisierte App. Die tatsächliche Bildschirmzeit-Automation muss zusätzlich interaktiv auf einem Mac geprüft werden.
 
 ## Der neue Mechanismus
 
@@ -59,7 +59,7 @@ Diese Variante installiert keinen privilegierten Helfer und ändert `/etc/hosts`
 
 ## Validierung
 
-In dieser Arbeitsumgebung bestanden **20 Kernlogiktests** unter Linux sowie die Swift-Syntax- und Shellprüfungen. Nativer macOS-Build, sechs AppModel-Integrationstests und echte Bildschirmzeit-Steuerung sind noch offen. Details: [Prüfstand](Documentation/Verification.md).
+In der Linux-Arbeitsumgebung bestanden **20 Kernlogiktests** sowie die Swift-Syntax- und Shellprüfungen. Der macOS-Workflow führt zusätzlich sechs AppModel-Integrationstests und den nativen Release-Build aus. Den aktuellen Laufstatus findest du in GitHub Actions; die echte Bildschirmzeit-Steuerung wird weiterhin manuell geprüft. Details: [Prüfstand](Documentation/Verification.md).
 
 - `swift test`: plattformunabhängige Sitzungs- und Statistiktests; auf macOS zusätzlich sechs Integrationstests mit simulierter Bildschirmzeit-Anbindung, ohne Systemänderungen.
 - `bash scripts/build-app.sh`: vollständiger nativer Release-Build, App-Bundle und lokale Signaturprüfung.

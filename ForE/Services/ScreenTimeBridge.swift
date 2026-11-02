@@ -203,7 +203,7 @@ private actor ScreenTimeAXDriver {
 
             if allowNavigation, !navigated, hasScreenTimeHeading {
                 let links = nodes.filter { node in
-                    node.enabled && (node.role == kAXButtonRole as String || node.role == kAXLinkRole as String)
+                    node.enabled && (node.role == kAXButtonRole as String || node.role == "AXLink")
                         && !node.labels.isDisjoint(with: downtimeNames)
                 }
                 if links.count == 1 {

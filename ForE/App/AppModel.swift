@@ -50,6 +50,7 @@ final class AppModel: ObservableObject {
 
     private let bridge: any ScreenTimeControlling
     private var timer: AnyCancellable?
+    private var activationObserver: AnyCancellable?
     private let storageURL: URL
     private var storageAvailable = true
 
@@ -96,9 +97,13 @@ final class AppModel: ObservableObject {
                 self?.tick()
             }
         }
-        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
-            object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.isTrusted = self?.bridge.isTrusted ?? false }
+        // Keep the subscription alive and deliver on the main run loop. This
+        // avoids transferring NotificationCenter's weak capture into a nested Task.
+        activationObserver = NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.isTrusted = self.bridge.isTrusted
             }
     }
 
