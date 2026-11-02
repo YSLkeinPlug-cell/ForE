@@ -1,0 +1,261 @@
+--- a/ForE/Documentation/Safari-Setup.md
++++ b/ForE/Documentation/Safari-Setup.md
+@@ -38,7 +38,46 @@
+ 
+ ## Nach einem Update oder Umzug
+ 
++### Erweiterung startet nicht: fehlendes AppKit
++
++Ein macOS-Content-Blocker benötigt die AppKit-Laufzeit. In dieser Version importiert `ContentBlockerRequestHandler.swift` deshalb `Cocoa`; das Target **ForESafariBlocker** verknüpft zusätzlich explizit das Systemframework **AppKit.framework**. Eine reine Foundation-Erweiterung konnte unter macOS 13 beim PlugInKit-Start die Meldung `misconfigured plugin; external subsystem [NSSharingService_Subsystem] not present; possible missing linkage` auslösen. Der eigene Request-Handler wurde dabei nicht erreicht; Agent und Haupt-App warteten auf die Regelaktualisierung.
++
++Ein vorhandenes Projekt lässt sich ohne erneuten Download korrigieren:
++
++1. Im Target **ForESafariBlocker → Build Phases → Link Binary With Libraries** über **+** `AppKit.framework` als **Required** hinzufügen. Das Systemframework wird nicht in die App kopiert; falls Xcode eine Einbettungsoption anzeigt, **Do Not Embed** wählen.
++2. In `SafariBlocker/ContentBlockerRequestHandler.swift` die erste Zeile von `import Foundation` zu `import Cocoa` ändern. `import ForECore` bleibt bestehen.
++3. Die App-Group-Berechtigungen beider Targets beibehalten, das vollständige Schema bereinigen und neu bauen. Safari vollständig beenden und wieder öffnen. Den bereits laufenden ForE-Agenten aus der neu gebauten App neu starten, bevor erneut geprüft wird.
++4. Erst ein erfolgreich abgeschlossener Safari-Reload, ein neuer `safari-extension-receipt.json`-Nachweis in der gemeinsamen App Group und der passende frische Agentstatus belegen die erfolgreiche Einrichtung. Auch die Freigabe nach Sitzungsende bei geschlossener Haupt-App prüfen.
++
++Zur technischen Kontrolle auf dem Mac zeigt `otool -L` für die gebaute Erweiterungsbinärdatei unter `ForE.app/Contents/PlugIns/ForESafariBlocker.appex/Contents/MacOS/ForESafariBlocker` die AppKit-Verknüpfung. Eine Logmeldung allein ist kein Ersatz für den anschließenden Funktionstest.
++
+ Den Agent nicht aus einem später gelöschten Build-Ordner laufen lassen. Beende eine Sitzung und prüfe die Freigabe, bevor du die App ersetzt. Falls nach einer neuen Signierung bzw. einem Umzug der Dienst nicht mehr startet, den alten Hintergrundeintrag in den macOS-Anmeldeobjekten prüfen und die Einrichtung aus der neuen App erneut durchführen. Eine noch registrierte alte Kopie darf nicht parallel dieselbe App Group beschreiben.
++
++### Meldung „Die registrierte ForE-App wurde nicht gefunden“
++
++Diese Meldung der vorherigen Version war zu pauschal: `SMAppService.Status.notFound` bedeutet, dass macOS den Dienst nicht finden konnte. Sie beweist nicht, dass die App außerhalb von Programme liegt. Die alte Einrichtung hat in diesem Zustand überhaupt keinen Registrierungsversuch unternommen.
++
++Die korrigierte Einrichtung prüft zuerst die tatsächlich laufende App auf `Contents/Library/LaunchAgents/de.fore.safari-agent.plist` und das zugehörige Programm. Anschließend versucht sie auch bei `.notFound` eine Registrierung. Falls dieser Versuch scheitert und keine Benutzerfreigabe aussteht, entfernt sie gezielt den alten ForE-Diensteintrag, wartet den Abschluss ab und versucht die Registrierung einmal erneut. Bereits aktivierte oder auf Benutzerfreigabe wartende Dienste werden dabei nicht erneut registriert. Fehler enthalten nun die Operation, Fehlerdomain, Fehlernummer und den laufenden App-Pfad. Die Prüfung auf einen lebenden Agenten und bestätigte Safari-Regeln bleibt erforderlich.
++
++Nach Installation dieses Quellcode-Fixes:
++
++1. Eine aktive Sitzung beenden und die Freigabe prüfen. ForE schließen und Xcode stoppen.
++2. In Xcode das korrigierte Projekt öffnen, die bisherigen eigenen Team-/Signierungs-/App-Group-Einstellungen übernehmen und **Product → Clean Build Folder** ausführen. Anschließend das Schema **ForE** vollständig bauen.
++3. Unter **Products → ForE.app → Show in Finder** genau die neu gebaute App nach `/Applications` (Finder: Programme) kopieren und die alte App ersetzen. Nicht nur den Quellcode oder die `.xcodeproj` kopieren. Nach dem Kopieren keine neue Xcode-Kopie starten.
++4. `/Applications/ForE.app` öffnen, die Safari-Erweiterung prüfen und **Hintergrundagent einrichten** wählen. Falls erforderlich, ForE unter macOS **Allgemein → Anmeldeobjekte** bzw. **Anmeldeobjekte & Erweiterungen** im Hintergrund erlauben. Anschließend **Status prüfen** wählen.
++
++Die eingebettete Dienstdatei lässt sich ohne Systemänderung im Terminal prüfen:
++
++```sh
++plutil -lint "/Applications/ForE.app/Contents/Library/LaunchAgents/de.fore.safari-agent.plist"
++test -x "/Applications/ForE.app/Contents/MacOS/ForE" && echo "ForE-Programm vorhanden"
++```
++
++Fehlt die Dienstdatei, hilft das Verschieben derselben unvollständigen App nicht: Dann muss das vollständige Schema neu gebaut werden. Keine Plist nachträglich in die signierte App kopieren, da das die Signatur beschädigt. Für diese Reparatur ist kein globales `sfltool resetbtm` erforderlich.
++
++**Falls Xcode `Cannot find 'SMAppServiceErrorDomain' in scope` meldet:** Die aktuelle Fassung vergleicht an beiden Stellen `failure.domain` mit dem String `"SMAppServiceErrorDomain"`. Die vorherige Fassung hat stattdessen das in älteren SDKs fehlende Konstantensymbol ohne Anführungszeichen verwendet. In einem bestehenden Projekt beide Vergleiche entsprechend ändern und erneut bauen. Dafür weder das Mindestziel macOS 13 erhöhen noch Benutzerfreigaben umgehen. Der Vergleich bleibt auf dieselbe Fehlerdomain und dieselben Fehlercodes beschränkt.
++
++Grundlagen: [Apple: Statuswerte](https://developer.apple.com/documentation/servicemanagement/smappservice/status-swift.enum), [Apple: Registrierung](https://developer.apple.com/documentation/servicemanagement/smappservice/register%28%29). Das gezielte Entfernen vor einer erneuten Registrierung bei veralteten Einträgen wird auch in den [Karabiner-Entwicklungsnotizen](https://github.com/pqrs-org/Karabiner-Elements/blob/main/DEVELOPMENT.md#macos-service-management) beschrieben; die dortigen Beobachtungen betreffen Daemons und beweisen nicht die konkrete Ursache auf jedem Mac.
+ 
+ ## Manuelle Freigabe und Deinstallation
+ 
+@@ -60,5 +99,6 @@
+ 4. Vorzeitigen Abbruch, Ruhezustand über das Ende hinaus und Neustart während einer Sitzung testen.
+ 5. Erweiterung deaktivieren, Agent im Hintergrund nicht erlauben und eine falsche App Group testen: Bei gewünschtem Safari-Schutz darf keine neue Sitzung unbemerkt als erfolgreich geschützt starten.
+ 6. Einen externen Reload-Fehler bzw. nicht erreichbaren Agenten simulieren. Fehleranzeige und manuelle Freigabe über die Safari-Erweiterung prüfen.
++7. Die korrigierte Registrierung auf einem Mac getrennt prüfen: erste Einrichtung ohne alten Eintrag; erneute Einrichtung aus einer verschobenen/ersetzten App bei `.notFound`; unveränderte `.enabled`- und `.requiresApproval`-Zustände; fehlende eingebettete Dienstdatei. Nur die explizite Einrichtung darf eine Registrierung verändern. Nach einer Reparatur müssen weiterhin ein frischer Agentstatus und eine bestätigte Regelaktualisierung eintreffen. Fehler beim Entfernen oder Registrieren dürfen nicht als Erfolg erscheinen.
+ 
+ **Hier nicht als ausgeführt ausweisen:** Die Cloud-Umgebung ist Linux. Tests prüfen dort die Foundation-Regelerzeugung. Zwei zusätzliche XCTest-Tests kompilieren aktive und inaktive Regeln auf einem Mac tatsächlich mit `WKContentRuleListStore`; Safari-Erweiterung, Privat-Relay, Signierung, App-Group-Berechtigung und Hintergrundregistrierung benötigen darüber hinaus diese manuellen Mac-Tests.
+--- a/ForE/ForE.xcodeproj/project.pbxproj
++++ b/ForE/ForE.xcodeproj/project.pbxproj
+@@ -4,6 +4,10 @@
+ 	classes = {};
+ 	objectVersion = 56;
+ 	objects = {
++		AB6EA5A8D09945B79712A001 /* AppKit.framework in Frameworks */ = {
++			isa = PBXBuildFile;
++			fileRef = AB6EA5A8D09945B79712A002 /* AppKit.framework */;
++		};
+ 		064290DC82B62BBF52EECB3D /* PBXBuildFile */ = {
+ 			isa = PBXBuildFile;
+ 			fileRef = 506E0DCA6ABCA92BF6EF22FE;
+@@ -354,6 +358,13 @@
+ 			path = Package.swift;
+ 			sourceTree = "<group>";
+ 		};
++		AB6EA5A8D09945B79712A002 /* AppKit.framework */ = {
++			isa = PBXFileReference;
++			lastKnownFileType = wrapper.framework;
++			name = AppKit.framework;
++			path = System/Library/Frameworks/AppKit.framework;
++			sourceTree = SDKROOT;
++		};
+ 		42C89B1BEF21B5469B214165 /* PBXFrameworksBuildPhase */ = {
+ 			buildActionMask = 2147483647;
+ 			files = (
+@@ -373,6 +384,7 @@
+ 			isa = PBXFrameworksBuildPhase;
+ 			buildActionMask = 2147483647;
+ 			files = (
++				AB6EA5A8D09945B79712A001 /* AppKit.framework in Frameworks */,
+ 				FC7BDBCD08537C71E2853940,
+ 			);
+ 			runOnlyForDeploymentPostprocessing = 0;
+@@ -414,8 +426,17 @@
+ 				F6E44523C2923F4C705976D7,
+ 				AE2261C101F007B78439FE4E,
+ 				2A176597C7099084088F87D2,
+-			);
+-			isa = PBXGroup;
++				AB6EA5A8D09945B79712A003 /* Frameworks */,
++			);
++			isa = PBXGroup;
++			sourceTree = "<group>";
++		};
++		AB6EA5A8D09945B79712A003 /* Frameworks */ = {
++			isa = PBXGroup;
++			children = (
++				AB6EA5A8D09945B79712A002 /* AppKit.framework */,
++			);
++			name = Frameworks;
+ 			sourceTree = "<group>";
+ 		};
+ 		2A176597C7099084088F87D2 /* SafariBlocker */ = {
+--- a/ForE/ForE/Services/SafariProtection.swift
++++ b/ForE/ForE/Services/SafariProtection.swift
+@@ -23,6 +23,8 @@
+     case extensionDisabled
+     case backgroundApprovalRequired
+     case serviceNotFound
++    case serviceBundleInvalid(String)
++    case serviceRegistrationFailed(String)
+     case extensionStatusTimedOut
+     case agentUnavailable
+     case agentFailed(String)
+@@ -39,7 +41,11 @@
+         case .backgroundApprovalRequired:
+             return "Erlaube ForE unter Systemeinstellungen → Allgemein → Anmeldeobjekte im Hintergrund. Der Safari-Dienst muss auch bei geschlossener App Regeln wieder freigeben können."
+         case .serviceNotFound:
+-            return "Die registrierte ForE-App wurde nicht gefunden. Lege die aktuelle ForE.app in Programme ab, öffne sie dort und richte den Safari-Hintergrunddienst erneut ein."
++            return "macOS findet den Safari-Hintergrunddienst nicht. Wähle „Hintergrundagent einrichten“, um ihn aus dieser App neu zu registrieren."
++        case .serviceBundleInvalid(let detail):
++            return "Der Safari-Hintergrunddienst fehlt im App-Paket oder ist beschädigt. Baue das Schema ForE vollständig neu und ersetze die installierte App. \(detail)"
++        case .serviceRegistrationFailed(let detail):
++            return "Der Safari-Hintergrunddienst konnte nicht registriert werden. \(detail)"
+         case .extensionStatusTimedOut:
+             return "Safari antwortet nicht auf die Statusabfrage. Öffne Safari, prüfe ForE unter Einstellungen → Erweiterungen und versuche es erneut."
+         case .agentUnavailable:
+@@ -116,6 +122,7 @@
+ 
+ @MainActor
+ final class SafariProtection: ObservableObject {
++    private static let agentPlistName = "de.fore.safari-agent.plist"
+     @Published private(set) var enabledInSafari = false
+     @Published private(set) var agentReady = false
+     @Published private(set) var setupMessage: String?
+@@ -124,7 +131,7 @@
+     private var refreshTask: Task<Void, Never>?
+ 
+     private var service: SMAppService {
+-        SMAppService.agent(plistName: "de.fore.safari-agent.plist")
++        SMAppService.agent(plistName: Self.agentPlistName)
+     }
+ 
+     var registrationStatus: SMAppService.Status { service.status }
+@@ -175,7 +182,7 @@
+         defer { isBusy = false }
+         do {
+             _ = try SafariSharedStorage.containerURL()
+-            if registrationStatus == .notRegistered { try service.register() }
++            try await registerServiceIfNeeded()
+             guard registrationStatus == .enabled else {
+                 if registrationStatus == .requiresApproval {
+                     throw SafariProtectionError.backgroundApprovalRequired
+@@ -193,6 +200,91 @@
+             setupMessage = error.localizedDescription
+             throw error
+         }
++    }
++
++    /// A .notFound status describes Service Management's lookup, not whether
++    /// ForE.app exists. A first installation may need register() from this state.
++    /// Only the explicit setup action may repair a stale registration.
++    private func registerServiceIfNeeded() async throws {
++        try validateAgentBundle()
++        let agent = service
++        let initialStatus = agent.status
++        guard initialStatus == .notRegistered || initialStatus == .notFound else { return }
++
++        do {
++            try agent.register()
++        } catch {
++            if requiresApproval(error, service: agent) {
++                throw SafariProtectionError.backgroundApprovalRequired
++            }
++            if agent.status == .enabled { return }
++            guard initialStatus == .notFound else {
++                throw registrationFailure(error, operation: "Registrierung")
++            }
++
++            // Try normal registration first: unregistering a never-registered
++            // service can itself fail. If registration failed from .notFound,
++            // remove this service's stale record before one bounded retry.
++            let firstError = error
++            do {
++                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
++                    agent.unregister { error in
++                        if let error { continuation.resume(throwing: error) }
++                        else { continuation.resume() }
++                    }
++                }
++            } catch {
++                let failure = error as NSError
++                // Older SDKs do not expose the named error-domain constant.
++                // Compare NSError's domain string without linking that symbol.
++                guard failure.domain == "SMAppServiceErrorDomain",
++                      failure.code == kSMErrorJobNotFound else {
++                    throw registrationFailure(error, operation: "Alte Registrierung entfernen; erster Versuch: \(describe(firstError))")
++                }
++            }
++            try Task.checkCancellation()
++            do {
++                try agent.register()
++            } catch {
++                if requiresApproval(error, service: agent) {
++                    throw SafariProtectionError.backgroundApprovalRequired
++                }
++                if agent.status == .enabled { return }
++                throw registrationFailure(error, operation: "Erneute Registrierung")
++            }
++        }
++    }
++
++    private func requiresApproval(_ error: Error, service: SMAppService) -> Bool {
++        let failure = error as NSError
++        return service.status == .requiresApproval
++            || (failure.domain == "SMAppServiceErrorDomain" && failure.code == kSMErrorLaunchDeniedByUser)
++    }
++
++    private func validateAgentBundle() throws {
++        let bundle = Bundle.main.bundleURL
++        let plistURL = bundle.appendingPathComponent("Contents/Library/LaunchAgents/\(Self.agentPlistName)")
++        guard let data = try? Data(contentsOf: plistURL),
++              let plist = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
++              plist["Label"] as? String == "de.fore.safari-agent",
++              plist["BundleProgram"] as? String == "Contents/MacOS/ForE",
++              let arguments = plist["ProgramArguments"] as? [String],
++              Array(arguments.dropFirst()) == ["--safari-agent"] else {
++            throw SafariProtectionError.serviceBundleInvalid("Dienstdatei: \(plistURL.path)")
++        }
++        let executable = bundle.appendingPathComponent("Contents/MacOS/ForE")
++        guard FileManager.default.isExecutableFile(atPath: executable.path) else {
++            throw SafariProtectionError.serviceBundleInvalid("Programmdatei: \(executable.path)")
++        }
++    }
++
++    private func describe(_ error: Error) -> String {
++        let failure = error as NSError
++        return "\(failure.domain) (\(failure.code)): \(failure.localizedDescription)"
++    }
++
++    private func registrationFailure(_ error: Error, operation: String) -> SafariProtectionError {
++        .serviceRegistrationFailed("\(operation): \(describe(error)) App: \(Bundle.main.bundleURL.path)")
+     }
+ 
+     /// Session preflight is read-only; background registration is the user's
+--- a/ForE/SafariBlocker/ContentBlockerRequestHandler.swift
++++ b/ForE/SafariBlocker/ContentBlockerRequestHandler.swift
+@@ -1,4 +1,4 @@
+-import Foundation
++import Cocoa
+ import ForECore
+ 
+ /// Safari evaluates this compiled URL rule list before resolving destinations,
