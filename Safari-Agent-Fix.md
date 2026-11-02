@@ -15,6 +15,8 @@ Erfolg bedeutet: **Erweiterung aktiviert** und **Hintergrundagent bereit**. Ansc
 
 ## Wenn weiter ein Fehler erscheint
 
+**Safari-Reload bleibt ohne Antwort / `NSSharingService_Subsystem` fehlt:** Der macOS-Erweiterung fehlte die AppKit-Verknüpfung. Das aktuelle Projekt importiert im Request-Handler `Cocoa` und verknüpft `AppKit.framework` explizit im Target **ForESafariBlocker**. Für eine bestehende lokale Kopie unter **ForESafariBlocker → Build Phases → Link Binary With Libraries → +** `AppKit.framework` als **Required** hinzufügen (Systemframework: **Do Not Embed**). In `ContentBlockerRequestHandler.swift` `import Foundation` durch `import Cocoa` ersetzen. Die bereits korrigierten App-Group-Berechtigungen bleiben bestehen. Danach das Schema vollständig bereinigen und neu bauen, Safari beenden und wieder öffnen, den ForE-Agenten neu starten und die Einrichtung prüfen. Ein neuer Erweiterungsnachweis und eine erfolgreiche Regelbestätigung müssen vorliegen; den Ablauf einer kurzen Sitzung auch bei geschlossener App testen. Der konkrete Bootstrap-Fehler wurde in einem Benutzerprotokoll unter macOS 13.7.8 gefunden; der Funktionstest des korrigierten Builds muss auf dem Mac erfolgen.
+
 **Xcode-Fehler `Cannot find 'SMAppServiceErrorDomain' in scope`:** Das aktuelle ZIP korrigiert beide Stellen in `SafariProtection.swift`. Zum Aktualisieren eines bereits geöffneten Projekts an beiden Stellen `failure.domain == SMAppServiceErrorDomain` durch `failure.domain == "SMAppServiceErrorDomain"` ersetzen und erneut bauen. Die Anführungszeichen sind erforderlich. So wird die von `NSError` gelieferte Fehlerdomain verglichen, ohne das in älteren SDKs fehlende Konstantensymbol zu verwenden. Ein Xcode-Update oder ein höheres macOS-Mindestziel ist für diese Korrektur nicht nötig.
 
 Die neue Meldung enthält bei Registrierungsfehlern die Fehlerdomain, Fehlernummer und den Pfad der tatsächlich laufenden App. Diese vollständige Meldung für die weitere Diagnose verwenden.
@@ -30,7 +32,7 @@ Wenn die Dienstdatei fehlt, das vollständige Schema neu bauen. Nicht nachträgl
 
 ## Änderung und Prüfstand
 
-Basis ist der Safari-Branch `export/fore-safari-private-relay-2026-10-30`, Commit `591406db646327c0c92282b18799cb256ebd76df`. Im Quellarchiv wurden ausschließlich `ForE/Services/SafariProtection.swift` und `Documentation/Safari-Setup.md` geändert. Der lesbare Patch liegt neben dem ZIP unter `Safari-Agent-Fix.patch` (aus dem entpackten Projekt mit `patch -p2` anwendbar, falls stattdessen die bestehende Safari-Codebasis aktualisiert werden soll).
+Basis ist der Safari-Branch `export/fore-safari-private-relay-2026-10-30`, Commit `591406db646327c0c92282b18799cb256ebd76df`. Im Quellarchiv wurden ausschließlich `ForE/Services/SafariProtection.swift`, `SafariBlocker/ContentBlockerRequestHandler.swift`, `ForE.xcodeproj/project.pbxproj` und `Documentation/Safari-Setup.md` geändert. Der lesbare Patch liegt neben dem ZIP unter `Safari-Agent-Fix.patch` (aus dem entpackten Projekt mit `patch -p2` anwendbar, falls stattdessen die bestehende Safari-Codebasis aktualisiert werden soll).
 
 Die Einrichtung prüft das App-Paket, versucht auch bei `.notFound` eine Registrierung und kann nach einem fehlgeschlagenen Versuch den einzelnen alten ForE-Dienst abmelden und einmal neu registrieren. Das Abmelden wird abgewartet. Fehlende Benutzerfreigaben werden weiterhin respektiert; bereits aktivierte Dienste werden nicht neu registriert. Die Bereitschaft erfordert weiterhin einen aktuellen Agentstatus und eine Safari-Regelbestätigung.
 
