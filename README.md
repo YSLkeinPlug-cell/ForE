@@ -16,10 +16,9 @@ ForE konfiguriert **keine eigene App- oder Website-Sperrliste**. Was macOS währ
 
 ## Bauen und starten
 
-Du brauchst einen Mac mit **macOS 13 oder neuer**, Xcode 15+ einschließlich Command Line Tools oder eine passende Swift-5.9+-Toolchain. Öffne Terminal im entpackten Projektordner:
+Du brauchst einen Mac mit **macOS 13 oder neuer** und einer **vollständigen Xcode-Installation ab Version 15**. Öffne Xcode nach der Installation einmal und schließe dessen Ersteinrichtung ab. Die separat installierten Command Line Tools allein reichen für diesen Swift-Package-Build nicht aus, weil SwiftPM auch das mit Xcode gelieferte XCTest-Werkzeug benötigt. Öffne Terminal im entpackten Projektordner:
 
 ```sh
-swift test
 bash scripts/build-app.sh
 open 'build/ForE ScreenTime.app'
 ```
@@ -27,6 +26,20 @@ open 'build/ForE ScreenTime.app'
 Das Skript baut für die Architektur des verwendeten Macs (Apple Silicon oder Intel), erzeugt ein App-Bundle und signiert es lokal ad hoc. Es installiert nichts und ändert keine Bildschirmzeit-Einstellungen. Verschiebe die App vor der Bedienungshilfenfreigabe möglichst an einen festen Ort, etwa `/Applications`; nach einem Neubau kann die Freigabe erneut nötig sein. Für eine Weitergabe mit Developer-ID-Signatur und Notarisierung sind ein Apple-Entwicklerkonto und ein eigener Signierprozess nötig. Das Projekt lässt sich außerdem über `Package.swift` in Xcode öffnen.
 
 Alternativ startet ein Doppelklick auf `Build.command` denselben Build. Die App liegt anschließend im Ordner `build`.
+
+### Falls das Terminal „unable to find utility xctest“ meldet
+
+Dann ist häufig `/Library/Developer/CommandLineTools` ausgewählt, während der Build in Xcode selbst funktioniert. Öffne **Xcode → Settings/Einstellungen → Locations → Command Line Tools** und wähle deine installierte Xcode-Version. Starte anschließend `Build.command` erneut.
+
+Das Build-Skript prüft die für diesen Lauf angegebene `DEVELOPER_DIR`-Installation, die aktive Xcode-Auswahl und die üblichen Pfade unter `/Applications`. Es verwendet nur eine Installation mit Swift, XCTest und einem macOS-SDK und ersetzt einen geerbten `SDKROOT`-Pfad durch deren SDK. Diese Auswahl gilt nur für den Build-Prozess; das Skript ändert keine globale Xcode-Einstellung.
+
+Für eine andere Xcode-Installation kannst du den Pfad ausdrücklich angeben:
+
+```sh
+env -u SDKROOT DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer" bash scripts/build-app.sh
+```
+
+Ersetze den Xcode-Pfad, falls du die App anders benannt oder an einem anderen Ort installiert hast. Die beim Terminalstart angezeigte Empfehlung, zu zsh zu wechseln, ist unabhängig von diesem Fehler.
 
 ## Bildschirmzeit einmal einrichten
 
