@@ -1,5 +1,7 @@
 # ForE: Safari-Hintergrundagent reparieren
 
+**Aktuelle Ergänzung:** Der zusätzliche Fix für Zeitüberschreitungen und den kontrollierten Agent-Neustart ist in [Safari-Timeout-Fix.md](Safari-Timeout-Fix.md) beschrieben. Die folgenden Angaben dokumentieren den vorherigen Registrierungs-/AppKit-Fix.
+
 Die Meldung „Die registrierte ForE-App wurde nicht gefunden“ wurde in der Safari-Version zu früh ausgelöst: Bei `SMAppService.Status.notFound` hat ForE keine Registrierung versucht. Das bloße Öffnen derselben App aus Programme konnte diesen Codepfad nicht beheben. Der Status beweist nicht, dass die App fehlt. Zusätzlich kann ein tatsächlich unvollständiges App-Paket oder eine veraltete macOS-Registrierung vorliegen.
 
 ## Korrigiertes Projekt installieren

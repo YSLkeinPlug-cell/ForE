@@ -1,0 +1,41 @@
+name: Safari build and tests
+
+on:
+  push:
+    branches: [fix/safari-rule-confirmation]
+    paths:
+      - ForE-Safari.zip
+      - .github/workflows/safari-validation.yml
+  pull_request:
+    paths:
+      - ForE-Safari.zip
+      - .github/workflows/safari-validation.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract Safari project
+        run: unzip -q "$GITHUB_WORKSPACE/ForE-Safari.zip" -d "$RUNNER_TEMP/fore-safari"
+      - name: Run Swift tests including WebKit rule compilation
+        working-directory: ${{ runner.temp }}/fore-safari/ForE
+        run: swift test
+      - name: Build unsigned Debug app
+        working-directory: ${{ runner.temp }}/fore-safari/ForE
+        run: >-
+          xcodebuild -project ForE.xcodeproj -scheme ForE
+          -destination 'generic/platform=macOS' -configuration Debug
+          -derivedDataPath "$RUNNER_TEMP/fore-safari-build"
+          CODE_SIGNING_ALLOWED=NO build
+      - name: Build unsigned Release app
+        working-directory: ${{ runner.temp }}/fore-safari/ForE
+        run: >-
+          xcodebuild -project ForE.xcodeproj -scheme ForE
+          -destination 'generic/platform=macOS' -configuration Release
+          -derivedDataPath "$RUNNER_TEMP/fore-safari-build"
+          CODE_SIGNING_ALLOWED=NO build

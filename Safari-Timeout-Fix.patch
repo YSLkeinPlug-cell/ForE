@@ -1,0 +1,1174 @@
+--- a/ForE/Documentation/Architecture.md
++++ b/ForE/Documentation/Architecture.md
+@@ -39,9 +39,11 @@
+ 
+ `ForESafariBlocker.appex` ist eine sandboxed Safari-Content-Blocker-Erweiterung. Sie liefert WebKit-kompatible URL-Regeln aus `ForECore.SafariRules`. Haupt-App und Erweiterung teilen nur einen berechtigten App-Group-Container. Die Erweiterung liest weder `/Library` noch Browserinhalte und benötigt keine Netzwerkberechtigung. App-Group-Bezeichner und Team-Signierung sind eine zusätzliche Voraussetzung dieses Features.
+ 
+-`ForEMain` trennt den UI-Start vom Modus `--safari-agent`. Ein von `SMAppService.agent` verwalteter Benutzer-LaunchAgent startet dieselbe enthaltende App-Binärdatei in diesem Modus. Dadurch bleibt der Agent unabhängig vom App-Fenster und verwendet die Identität des Bundles, das die Safari-Erweiterung enthält. Der Agent liest den Systemstatus alle drei Sekunden, publiziert atomar einen `SafariRuleSet`-Snapshot und fordert eine Regelaktualisierung bei Safari an. Er läuft ohne Root-Rechte. `KeepAlive` startet ihn nach einem Prozessabbruch neu; ein ausbleibender Reload-Callback führt nach einem begrenzten Timeout ebenfalls zum Neustart.
++`ForEMain` trennt den UI-Start vom Modus `--safari-agent`. Ein von `SMAppService.agent` verwalteter Benutzer-LaunchAgent startet dieselbe enthaltende App-Binärdatei in diesem Modus. Dadurch bleibt der Agent unabhängig vom App-Fenster und verwendet die Identität des Bundles, das die Safari-Erweiterung enthält. Der Agent liest den Systemstatus alle drei Sekunden, publiziert atomar einen `SafariRuleSet`-Snapshot und fordert eine Regelaktualisierung bei Safari an. Er läuft ohne Root-Rechte. `KeepAlive` startet ihn nach einem Prozessabbruch neu; ein ausbleibender Reload-Callback wird nach 30 Sekunden als Fehler gemeldet. Der Agent bleibt aktiv und versucht den Reload nach 30 Sekunden Pause erneut. Ein geänderter Regelsatz kann vorher geladen werden. Die explizite Einrichtung startet den Dienst kontrolliert neu. Verspätete Callbacks invalidieren die alte Bestätigung und lösen eine erneute Prüfung des aktuellen Regelsatzes aus.
+ 
+ Der `ContentBlockerRequestHandler` prüft die Frist beim Laden und gibt bei ungültiger Konfiguration eine inaktive Regel zurück. Er schreibt außerdem einen `SafariRuleReceipt` in die App Group. Erst wenn Safari eine erfolgreiche Regelkompilierung meldet **und** der Nachweis den angeforderten Snapshot bestätigt, publiziert der Agent eine passende Sitzungsbestätigung. Fehlender Containerzugriff oder eine erfolgreich kompilierte inaktive Ausweichregel werden dadurch nicht mit aktiver Sperrung verwechselt.
++
++Der Agent hält seinen Prozess mit `dispatchMain()` am Leben. `SafariAgentScheduler` schreibt den Initialisierungsstatus und aktiviert den Timer vor dem ersten Tick. Zustand, Timer und Antworten laufen auf einer seriellen Queue, während der Einstieg in SafariServices eine separate Queue verwendet. So kann ein synchron blockierender Safari-Aufruf nicht den Heartbeat oder die Zeitüberwachung anhalten. Ein eigener Service-Management-Actor übernimmt Registrierung und Statusabfragen außerhalb des UI-Actors; die UI liest einen veröffentlichten Statuswert. Die gemeinsame Containerauflösung und das Lesen der Statusdatei werden ebenfalls außerhalb des Hauptthreads ausgeführt.
+ 
+ Die App prüft vor einer Sitzung Erweiterungsstatus, Hintergrundregistrierung und frischen Agentstatus. Nach dem Hosts-Start wartet sie auf die konkrete Sitzungs-ID im Agentnachweis. Schlägt das fehl, fordert sie eine vorzeitige Hosts-Freigabe an. Der bestehende Hosts-Verlauf zählt weiterhin tatsächliche Hosts-Sperrzeit; er wird nicht als Beweis lückenlosen Safari-Schutzes umgedeutet.
+ 
+--- a/ForE/Documentation/Safari-Setup.md
++++ b/ForE/Documentation/Safari-Setup.md
+@@ -32,11 +32,35 @@
+ - Die sandboxed Erweiterung liest nur die gemeinsame App Group und liefert WebKit-kompatibles JSON. Sie benötigt keine Netzwerkfreigabe und liest keine Seiteninhalte. Ein Nachweis hält fest, welche Konfiguration sie tatsächlich gelesen hat.
+ - Erst nach erfolgreicher Safari-Kompilierung und passendem Erweiterungsnachweis bestätigt der Agent die aktive Sitzung. Die App prüft diese Bestätigung nach dem Hosts-Start. Fehlt sie, wird eine vorzeitige Systemfreigabe angefragt und der Fehler angezeigt; dafür kann macOS erneut Administratorrechte verlangen.
+ - Bei Ablauf, Abbruch oder fehlendem/ungültigem Systemstatus erzeugt der Agent eine inaktive Regelliste. Eine gültige `^$`-Regel trifft keine Ressourcen-URL; WebKit akzeptiert dagegen kein leeres Regelarray. Fehlgeschlagene Aktualisierungen werden erneut versucht.
+-- Kompilierte Regeln haben **keinen eingebauten Timer**. Die Prüfung der Ablaufzeit im Erweiterungscode ersetzt deshalb den Agenten nicht. Der `KeepAlive`-Job muss auch bei geschlossener App aktiv bleiben. Nach Ab-/Anmeldung, Neustart oder Aufwachen wird die Frist erneut geprüft. Ein ausbleibender Safari-API-Callback führt zum Neustart des Agenten durch launchd.
++- Kompilierte Regeln haben **keinen eingebauten Timer**. Die Prüfung der Ablaufzeit im Erweiterungscode ersetzt deshalb den Agenten nicht. Der `KeepAlive`-Job muss auch bei geschlossener App aktiv bleiben. Nach Ab-/Anmeldung, Neustart oder Aufwachen wird die Frist erneut geprüft. Ein ausbleibender Safari-API-Callback wird als Fehler gemeldet; der Agent bleibt aktiv und wiederholt die Aktualisierung nach einer Pause.
+ 
+ Die Hosts-Zeitstatistik behält ihre bisherige Bedeutung. Sie ist kein Nachweis, dass in jedem Moment jeder Browser blockiert war. Wird die Erweiterung oder der Agent während einer Sitzung manuell deaktiviert, kann ForE dies nicht verhindern.
+ 
+ ## Nach einem Update oder Umzug
++
++### Nach rund 40 Sekunden: Hintergrunddienst nicht bereit
++
++Der erste Status wurde bisher erst nach dem ersten Safari-Aufruf geschrieben; auch der Timer startete erst danach. Blockierte bereits der synchrone Einstieg in SafariServices, konnte der Agent deshalb weder seinen Start noch seinen Timeout melden. Die neue Version schreibt zuerst einen Initialisierungsstatus und startet den Timer. Safari-Aufrufe laufen auf einer getrennten Queue, Antworten und Statusänderungen auf einer seriellen Zustandsqueue. Ein blockierter Safari-Aufruf verhindert dadurch keine Statusmeldungen mehr. Der Hauptthread der App führt keine synchronen Service-Management-Abfragen aus; die Oberfläche liest einen zwischengespeicherten Registrierungsstatus.
++
++Die Meldung `This method should not be called on the main thread` nennt ohne Stacktrace nicht den verursachenden Aufruf. Ebenso ist `CGSWindowShmemCreateWithPort failed` allein kein Nachweis der Fehlerursache. Die Korrektur behebt den gefundenen Startablauf und trennt nicht reagierende Safari-Aufrufe vom Status-Timer.
++
++Das Target **ForE** setzt **Enable Debug Dylib Support** ausdrücklich auf **No**, weil dieselbe Binärdatei auch von launchd gestartet wird. Apple verwendet diese Einstellung ebenfalls für das launchd-Programm im [SMAppService-Beispiel](https://developer.apple.com/forums/thread/802443). App und Erweiterung tragen jetzt Build-Version **2**. Das ist eine Kompatibilitätseinstellung und keine nachgewiesene Diagnose des jeweiligen Macs.
++
++Nach dem Update das Schema vollständig bereinigen und neu bauen, Xcode stoppen, die gesamte gebaute App nach Programme kopieren und genau diese Kopie öffnen. Anschließend den Hintergrundagenten erneut einrichten. Weder eine erforderliche Benutzerfreigabe noch die Regelbestätigung werden übersprungen.
++
++Bleibt ein aktueller Agentstatus aus, zeigt ForE nun eine eigene Startfehlermeldung. Öffne dann die macOS-App **Konsole**, starte das Streaming und filtere nach der Kategorie **SafariAgent**. Dort meldet der separate Hintergrundprozess seinen Eintrittspunkt, den Containerzugriff und Initialisierungsfehler. Die Debugger-Konsole der Haupt-App zeigt diese Meldungen nicht zuverlässig. Für weitere Diagnose die betreffenden Textzeilen einschließlich des ersten Fehlers verwenden.
++
++### Einrichtung endet mit einer Zeitüberschreitung
++
++Die Einrichtung wartet jetzt bis zu 41 Sekunden. Zuvor brach die App bereits nach 15 Sekunden ab, obwohl der Agent Safari bis zu 30 Sekunden Zeit für die Regelaktualisierung gab. Ein erfolgreicher erster Reload nach etwa 20 Sekunden darf deshalb nicht mehr als Fehler erscheinen.
++
++**Hintergrundagent einrichten** startet auch einen bereits registrierten Agenten kontrolliert neu: ForE wartet seine Abmeldung ab, entfernt seinen alten Status und registriert den Dienst erneut. Damit wird nach einem Update die aktuelle Programmversion verwendet; die letzte Fehlermeldung eines alten Prozesses kann die neue Einrichtung nicht sofort abbrechen. Eine erforderliche macOS-Hintergrundfreigabe bleibt erforderlich. Die automatische Statusprüfung startet den Dienst nicht neu.
++
++Bleibt der Safari-Callback aus, meldet der Agent den konkreten Fehler nach 30 Sekunden und bleibt erreichbar. Er beendet sich nicht mehr in einer Neustartschleife. Ein verspäteter Callback darf keinen neueren Regelsatz bestätigen. Nach einem Fehler erfolgen weitere Versuche mit 30 Sekunden Pause; ein geänderter Sitzungsstatus, insbesondere die Freigabe nach Ablauf, wartet nicht diese Pause ab. Ein erfolgreicher Safari-Reload und der passende aktuelle Erweiterungsnachweis bleiben Voraussetzung für die Bereitschaft.
++
++Nach dem Bauen und Ersetzen der App Safari vollständig beenden und erneut öffnen, die ForE-Erweiterung prüfen und in ForE **Hintergrundagent einrichten** wählen. Bleibt Safari ohne Antwort, kann eine beschädigte oder falsch signierte Erweiterung vorliegen. Die Korrektur der Warte- und Wiederholungslogik beweist nicht, dass Safari auf jedem Mac erfolgreich startet.
++
++Auf dem Mac prüfen: Einrichtung mit einem langsamen ersten Reload; wiederholte Einrichtung nach einem Fehler; fehlende Hintergrundfreigabe; fehlender Safari-Callback; kurze Sitzung und anschließende Freigabe bei geschlossener App. Der GitHub-Workflow prüft das entpackte Archiv mit Swift-Tests und unsigned Debug-/Release-Builds. Persönliche Signierung, Dienstregistrierung und die tatsächliche Safari-Funktion benötigen den lokalen Mac-Test.
+ 
+ ### Erweiterung startet nicht: fehlendes AppKit
+ 
+@@ -57,7 +81,7 @@
+ 
+ Diese Meldung der vorherigen Version war zu pauschal: `SMAppService.Status.notFound` bedeutet, dass macOS den Dienst nicht finden konnte. Sie beweist nicht, dass die App außerhalb von Programme liegt. Die alte Einrichtung hat in diesem Zustand überhaupt keinen Registrierungsversuch unternommen.
+ 
+-Die korrigierte Einrichtung prüft zuerst die tatsächlich laufende App auf `Contents/Library/LaunchAgents/de.fore.safari-agent.plist` und das zugehörige Programm. Anschließend versucht sie auch bei `.notFound` eine Registrierung. Falls dieser Versuch scheitert und keine Benutzerfreigabe aussteht, entfernt sie gezielt den alten ForE-Diensteintrag, wartet den Abschluss ab und versucht die Registrierung einmal erneut. Bereits aktivierte oder auf Benutzerfreigabe wartende Dienste werden dabei nicht erneut registriert. Fehler enthalten nun die Operation, Fehlerdomain, Fehlernummer und den laufenden App-Pfad. Die Prüfung auf einen lebenden Agenten und bestätigte Safari-Regeln bleibt erforderlich.
++Die korrigierte Einrichtung prüft zuerst die tatsächlich laufende App auf `Contents/Library/LaunchAgents/de.fore.safari-agent.plist` und das zugehörige Programm. Anschließend versucht sie auch bei `.notFound` eine Registrierung. Falls dieser Versuch scheitert und keine Benutzerfreigabe aussteht, entfernt sie gezielt den alten ForE-Diensteintrag, wartet den Abschluss ab und versucht die Registrierung einmal erneut. Die explizite Einrichtung startet bereits aktivierte Dienste kontrolliert neu; auf Benutzerfreigabe wartende Dienste werden nicht erneut registriert. Fehler enthalten nun die Operation, Fehlerdomain, Fehlernummer und den laufenden App-Pfad. Die Prüfung auf einen lebenden Agenten und bestätigte Safari-Regeln bleibt erforderlich.
+ 
+ Nach Installation dieses Quellcode-Fixes:
+ 
+@@ -99,6 +123,6 @@
+ 4. Vorzeitigen Abbruch, Ruhezustand über das Ende hinaus und Neustart während einer Sitzung testen.
+ 5. Erweiterung deaktivieren, Agent im Hintergrund nicht erlauben und eine falsche App Group testen: Bei gewünschtem Safari-Schutz darf keine neue Sitzung unbemerkt als erfolgreich geschützt starten.
+ 6. Einen externen Reload-Fehler bzw. nicht erreichbaren Agenten simulieren. Fehleranzeige und manuelle Freigabe über die Safari-Erweiterung prüfen.
+-7. Die korrigierte Registrierung auf einem Mac getrennt prüfen: erste Einrichtung ohne alten Eintrag; erneute Einrichtung aus einer verschobenen/ersetzten App bei `.notFound`; unveränderte `.enabled`- und `.requiresApproval`-Zustände; fehlende eingebettete Dienstdatei. Nur die explizite Einrichtung darf eine Registrierung verändern. Nach einer Reparatur müssen weiterhin ein frischer Agentstatus und eine bestätigte Regelaktualisierung eintreffen. Fehler beim Entfernen oder Registrieren dürfen nicht als Erfolg erscheinen.
++7. Die korrigierte Registrierung auf einem Mac getrennt prüfen: erste Einrichtung ohne alten Eintrag; erneute Einrichtung aus einer verschobenen/ersetzten App bei `.notFound`; kontrollierter Neustart bei `.enabled` und unveränderte Freigabeanforderung bei `.requiresApproval`; fehlende eingebettete Dienstdatei. Nur die explizite Einrichtung darf eine Registrierung verändern. Nach einer Reparatur müssen weiterhin ein frischer Agentstatus und eine bestätigte Regelaktualisierung eintreffen. Fehler beim Entfernen oder Registrieren dürfen nicht als Erfolg erscheinen.
+ 
+ **Hier nicht als ausgeführt ausweisen:** Die Cloud-Umgebung ist Linux. Tests prüfen dort die Foundation-Regelerzeugung. Zwei zusätzliche XCTest-Tests kompilieren aktive und inaktive Regeln auf einem Mac tatsächlich mit `WKContentRuleListStore`; Safari-Erweiterung, Privat-Relay, Signierung, App-Group-Berechtigung und Hintergrundregistrierung benötigen darüber hinaus diese manuellen Mac-Tests.
+--- a/ForE/ForE.xcodeproj/project.pbxproj
++++ b/ForE/ForE.xcodeproj/project.pbxproj
+@@ -742,7 +742,7 @@
+ 			buildSettings = {
+ 				APPLICATION_EXTENSION_API_ONLY = YES;
+ 				CODE_SIGN_ENTITLEMENTS = SafariBlocker/SafariBlocker.entitlements;
+-				CURRENT_PROJECT_VERSION = 1;
++				CURRENT_PROJECT_VERSION = 2;
+ 				MARKETING_VERSION = 1.0;
+ 				ENABLE_APP_SANDBOX = YES;
+ 				ENABLE_HARDENED_RUNTIME = YES;
+@@ -764,8 +764,9 @@
+ 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+ 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+ 				CODE_SIGN_ENTITLEMENTS = ForE/Resources/ForE.entitlements;
++				ENABLE_DEBUG_DYLIB = NO;
+ 				COMBINE_HIDPI_IMAGES = YES;
+-				CURRENT_PROJECT_VERSION = 1;
++				CURRENT_PROJECT_VERSION = 2;
+ 				ENABLE_APP_SANDBOX = NO;
+ 				ENABLE_HARDENED_RUNTIME = YES;
+ 				GENERATE_INFOPLIST_FILE = NO;
+@@ -856,8 +857,9 @@
+ 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+ 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+ 				CODE_SIGN_ENTITLEMENTS = ForE/Resources/ForE.entitlements;
++				ENABLE_DEBUG_DYLIB = NO;
+ 				COMBINE_HIDPI_IMAGES = YES;
+-				CURRENT_PROJECT_VERSION = 1;
++				CURRENT_PROJECT_VERSION = 2;
+ 				ENABLE_APP_SANDBOX = NO;
+ 				ENABLE_HARDENED_RUNTIME = YES;
+ 				GENERATE_INFOPLIST_FILE = NO;
+@@ -917,7 +919,7 @@
+ 			buildSettings = {
+ 				APPLICATION_EXTENSION_API_ONLY = YES;
+ 				CODE_SIGN_ENTITLEMENTS = SafariBlocker/SafariBlocker.entitlements;
+-				CURRENT_PROJECT_VERSION = 1;
++				CURRENT_PROJECT_VERSION = 2;
+ 				MARKETING_VERSION = 1.0;
+ 				ENABLE_APP_SANDBOX = YES;
+ 				ENABLE_HARDENED_RUNTIME = YES;
+--- a/ForE/ForE/Services/SafariAgent.swift
++++ b/ForE/ForE/Services/SafariAgent.swift
+@@ -1,39 +1,43 @@
+ import Foundation
+ import SafariServices
+ import ForECore
++import os
+ 
+ /// A user LaunchAgent invokes the containing app with --safari-agent. No App,
+ /// NSApplication or SwiftUI scene is initialized in this mode. launchd restarts
+ /// the agent independently of the UI; its live process is never a snapshot asset.
+ enum SafariAgent {
+     static func run() {
+-        do {
+-            let worker = try SafariAgentWorker()
+-            worker.start()
+-            withExtendedLifetime(worker) { RunLoop.main.run() }
+-        } catch {
+-            FileHandle.standardError.write(Data(("ForE Safari: \(error.localizedDescription)\n").utf8))
+-        }
++        let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "de.fore.app", category: "SafariAgent")
++        logger.notice("Safari-Hintergrundagent gestartet.")
++        let worker = SafariAgentWorker()
++        worker.start()
++        withExtendedLifetime(worker) { dispatchMain() }
+     }
+ }
+ 
+ private final class SafariAgentWorker {
+-    private let container: URL
+-    private var timer: Timer?
+-    private var applied: SafariRuleSet?
+-    private var reloadInFlight = false
+-    private var reloadStartedUptime: TimeInterval = 0
++    private var container: URL?
++    private let scheduler = SafariAgentScheduler()
++    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "de.fore.app", category: "SafariAgent")
++    private var reloadState = SafariReloadState()
+     private var lastError: String?
+-
+-    init() throws {
+-        container = try SafariSharedStorage.containerURL()
+-    }
++    private var retryAfterUptime: TimeInterval = 0
+ 
+     func start() {
+-        tick()
+-        let timer = Timer(timeInterval: 3, repeats: true) { [weak self] _ in self?.tick() }
+-        RunLoop.main.add(timer, forMode: .common)
+-        self.timer = timer
++        scheduler.start(interval: SafariReloadTiming.pollInterval, initialize: { [weak self] in
++            guard let self else { return }
++            do {
++                self.container = try SafariSharedStorage.containerURL()
++                // First light precedes all Safari framework calls. The timer
++                // stays runnable even if Safari's synchronous entry blocks.
++                self.writeHeartbeat(now: Date())
++                self.logger.notice("Gemeinsamer Container erreichbar; Status-Timer wird gestartet.")
++            } catch {
++                self.logger.error("Safari-Agent konnte nicht initialisiert werden: \(error.localizedDescription, privacy: .public)")
++                FileHandle.standardError.write(Data(("ForE Safari: \(error.localizedDescription)\n").utf8))
++            }
++        }, tick: { [weak self] in self?.tick() })
+     }
+ 
+     private func desiredRules(now: Date) -> (SafariRuleSet, String?) {
+@@ -60,22 +64,32 @@
+     }
+ 
+     private func tick() {
++        guard let container else { return }
+         let now = Date()
+         let (desired, sourceError) = desiredRules(now: now)
+-        if reloadInFlight {
+-            if ProcessInfo.processInfo.systemUptime - reloadStartedUptime > 30 {
+-                lastError = "Safari antwortet nicht auf die Regelaktualisierung. Der Hintergrunddienst wird neu gestartet."
+-                writeHeartbeat(now: now)
+-                // KeepAlive relaunches this agent. Without a callback, merely
+-                // keeping an in-flight flag forever would prevent expiry reloads.
+-                exit(EXIT_FAILURE)
+-            }
++        if reloadState.expire(uptime: ProcessInfo.processInfo.systemUptime) {
++            lastError = reloadTimeoutMessage()
++            retryAfterUptime = ProcessInfo.processInfo.systemUptime + SafariReloadTiming.callbackTimeout
++            writeHeartbeat(now: now)
++            return
++        }
++        if reloadState.pending != nil {
+             if let sourceError { lastError = sourceError }
+             writeHeartbeat(now: now)
+             return
+         }
+-        if applied == desired {
++        if reloadState.applied == desired {
+             lastError = sourceError
++            writeHeartbeat(now: now)
++            return
++        }
++        // Keep reporting the actual error instead of entering a restart loop.
++        // Retry with backoff so a transient Safari failure cannot prevent the
++        // eventual release of already compiled rules while the UI is closed.
++        if reloadState.failed == desired, ProcessInfo.processInfo.systemUptime >= retryAfterUptime {
++            reloadState.retryFailed()
++        }
++        guard reloadState.shouldReload(desired) else {
+             writeHeartbeat(now: now)
+             return
+         }
+@@ -84,42 +98,61 @@
+             // Once compilation is requested the old acknowledgment cannot prove
+             // Safari's current state. A successful no-op fallback with a missing
+             // receipt must not let a later state change skip its own reload.
+-            applied = nil
+             lastError = sourceError
+-            reloadInFlight = true
+-            reloadStartedUptime = ProcessInfo.processInfo.systemUptime
+-            let reloadStartedAt = Date()
+-            SFContentBlockerManager.reloadContentBlocker(withIdentifier: SafariSharedStorage.extensionIdentifier) { [weak self] error in
+-                DispatchQueue.main.async {
+-                    guard let self else { return }
+-                    self.reloadInFlight = false
+-                    if let error {
+-                        self.lastError = "Safari konnte die Regeln nicht übernehmen: \(error.localizedDescription)"
+-                    } else {
+-                        do {
+-                            let receiptURL = self.container.appendingPathComponent("safari-extension-receipt.json")
+-                            let receipt = try JSONDecoder().decode(SafariRuleReceipt.self, from: Data(contentsOf: receiptURL))
+-                            guard receipt.readError == nil, receipt.snapshot == desired,
+-                                  receipt.generatedAt >= reloadStartedAt.addingTimeInterval(-1) else {
+-                                throw SafariProtectionError.agentFailed("Die Safari-Erweiterung hat den gemeinsamen Regelsatz nicht bestätigt. Prüfe die App Group beider Targets.")
++            guard let attempt = reloadState.begin(desired, now: Date(), uptime: ProcessInfo.processInfo.systemUptime) else { return }
++            writeHeartbeat(now: Date())
++            scheduler.performRequest { [weak self] in
++                SFContentBlockerManager.reloadContentBlocker(withIdentifier: SafariSharedStorage.extensionIdentifier) { [weak self] error in
++                    self?.scheduler.receiveResult { [weak self] in
++                        guard let self else { return }
++                        guard self.reloadState.pending?.id == attempt.id else {
++                            // The API cannot cancel a timed-out reload. Its late
++                            // completion may have changed Safari's compiled list;
++                            // obtain a new confirmation of the current rules.
++                            self.reloadState.invalidateApplied()
++                            self.lastError = SafariAgentStatus.initializingMessage
++                            self.writeHeartbeat(now: Date())
++                            self.tick()
++                            return
++                        }
++                        if self.reloadState.expire(uptime: ProcessInfo.processInfo.systemUptime) {
++                            self.lastError = self.reloadTimeoutMessage()
++                            self.retryAfterUptime = ProcessInfo.processInfo.systemUptime + SafariReloadTiming.callbackTimeout
++                            self.writeHeartbeat(now: Date())
++                            return
++                        }
++                        if let error {
++                            self.reloadState.complete(id: attempt.id, succeeded: false)
++                            self.retryAfterUptime = ProcessInfo.processInfo.systemUptime + SafariReloadTiming.callbackTimeout
++                            self.lastError = "Safari konnte die Regeln nicht übernehmen: \(error.localizedDescription)"
++                        } else {
++                            do {
++                                let receiptURL = container.appendingPathComponent("safari-extension-receipt.json")
++                                let receipt = try JSONDecoder().decode(SafariRuleReceipt.self, from: Data(contentsOf: receiptURL))
++                                guard receipt.confirms(attempt) else {
++                                    throw SafariProtectionError.agentFailed("Die Safari-Erweiterung hat den gemeinsamen Regelsatz nicht bestätigt. Prüfe die App Group beider Targets.")
++                                }
++                                if let expiry = desired.activeUntil, expiry <= Date() {
++                                    // Compilation finished after the deadline. Never
++                                    // acknowledge that stale active session as ready.
++                                    self.reloadState.complete(id: attempt.id, succeeded: false)
++                                    self.lastError = "Die Fokuszeit ist abgelaufen; Safari wird freigegeben."
++                                    self.writeHeartbeat(now: Date())
++                                    self.tick()
++                                    return
++                                }
++                                // Both Safari and the extension must confirm the
++                                // exact snapshot, not merely accept a no-op fallback.
++                                self.reloadState.complete(id: attempt.id, succeeded: true)
++                                self.lastError = sourceError
++                            } catch {
++                                self.reloadState.complete(id: attempt.id, succeeded: false)
++                                self.retryAfterUptime = ProcessInfo.processInfo.systemUptime + SafariReloadTiming.callbackTimeout
++                                self.lastError = "Die Safari-Regeln konnten nicht bestätigt werden: \(error.localizedDescription)"
+                             }
+-                            if let expiry = desired.activeUntil, expiry <= Date() {
+-                                // Compilation finished after the deadline. Never
+-                                // acknowledge that stale active session as ready.
+-                                self.lastError = "Die Fokuszeit ist abgelaufen; Safari wird freigegeben."
+-                                self.writeHeartbeat(now: Date())
+-                                self.tick()
+-                                return
+-                            }
+-                            // Both Safari and the extension must confirm the
+-                            // exact snapshot, not merely accept a no-op fallback.
+-                            self.applied = desired
+-                            self.lastError = sourceError
+-                        } catch {
+-                            self.lastError = "Die Safari-Regeln konnten nicht bestätigt werden: \(error.localizedDescription)"
+                         }
++                        self.writeHeartbeat(now: Date())
+                     }
+-                    self.writeHeartbeat(now: Date())
+                 }
+             }
+         } catch {
+@@ -128,12 +161,19 @@
+         writeHeartbeat(now: now)
+     }
+ 
++    private func reloadTimeoutMessage() -> String {
++        "Safari hat die Regelaktualisierung innerhalb von 30 Sekunden nicht abgeschlossen. "
++            + "Beende Safari vollständig und öffne es erneut. Prüfe ForE unter Safari → Einstellungen → Erweiterungen "
++            + "und wähle anschließend in ForE „Hintergrundagent einrichten“, um den Dienst neu zu starten."
++    }
++
+     private func writeHeartbeat(now: Date) {
++        guard let container else { return }
+         // Before the initial reload succeeds there is deliberately no healthy
+         // heartbeat, even though the process itself is alive.
+-        let error = lastError ?? (applied == nil ? SafariAgentStatus.initializingMessage : nil)
+-        let status = SafariAgentStatus(updatedAt: now, appliedSessionID: applied?.sessionID,
+-                                       appliedActive: applied?.sessionID != nil, lastError: error)
++        let error = lastError ?? (reloadState.applied == nil ? SafariAgentStatus.initializingMessage : nil)
++        let status = SafariAgentStatus(updatedAt: now, appliedSessionID: reloadState.applied?.sessionID,
++                                       appliedActive: reloadState.applied?.sessionID != nil, lastError: error)
+         do {
+             try SafariSharedStorage.write(status, filename: SafariSharedStorage.statusFilename, in: container)
+         } catch {
+--- a/ForE/ForE/Services/SafariProtection.swift
++++ b/ForE/ForE/Services/SafariProtection.swift
+@@ -27,6 +27,7 @@
+     case serviceRegistrationFailed(String)
+     case extensionStatusTimedOut
+     case agentUnavailable
++    case agentStartupTimedOut
+     case agentFailed(String)
+     case timedOut
+ 
+@@ -50,6 +51,8 @@
+             return "Safari antwortet nicht auf die Statusabfrage. Öffne Safari, prüfe ForE unter Einstellungen → Erweiterungen und versuche es erneut."
+         case .agentUnavailable:
+             return "Der Safari-Hintergrunddienst ist noch nicht bereit. Richte die Safari-Sperre ein und prüfe die Hintergrundfreigabe."
++        case .agentStartupTimedOut:
++            return "macOS hat den Safari-Dienst registriert, aber er liefert keinen aktuellen Status. Beende Xcode und öffne die neu gebaute ForE.app aus Programme. Wähle dort „Hintergrundagent einrichten“. Bleibt der Fehler bestehen, prüfe in der macOS-App Konsole die Meldungen der Kategorie SafariAgent."
+         case .agentFailed(let detail):
+             return "Der Safari-Hintergrunddienst meldet: \(detail)"
+         case .timedOut:
+@@ -95,6 +98,14 @@
+         }
+     }
+ 
++    static func resolveContainer() async throws -> URL {
++        try await Task.detached(priority: .utility) { try containerURL() }.value
++    }
++
++    static func readStatusAsync(in container: URL) async throws -> SafariAgentStatus? {
++        try await Task.detached(priority: .utility) { try readStatus(in: container) }.value
++    }
++
+     static func write<T: Encodable>(_ value: T, filename: String, in container: URL) throws {
+         let data = try JSONEncoder().encode(value)
+         try data.write(to: container.appendingPathComponent(filename), options: .atomic)
+@@ -122,19 +133,14 @@
+ 
+ @MainActor
+ final class SafariProtection: ObservableObject {
+-    private static let agentPlistName = "de.fore.safari-agent.plist"
+     @Published private(set) var enabledInSafari = false
+     @Published private(set) var agentReady = false
+     @Published private(set) var setupMessage: String?
+     @Published private(set) var isBusy = false
+     @Published private(set) var agentStatus: SafariAgentStatus?
++    @Published private(set) var registrationStatus: SMAppService.Status = .notRegistered
+     private var refreshTask: Task<Void, Never>?
+-
+-    private var service: SMAppService {
+-        SMAppService.agent(plistName: Self.agentPlistName)
+-    }
+-
+-    var registrationStatus: SMAppService.Status { service.status }
++    private let serviceController = SafariServiceController()
+     var isReady: Bool { enabledInSafari && agentReady && registrationStatus == .enabled }
+ 
+     func refresh() async {
+@@ -150,9 +156,10 @@
+ 
+     private func performRefresh() async {
+         do {
+-            let container = try SafariSharedStorage.containerURL()
++            let container = try await SafariSharedStorage.resolveContainer()
++            registrationStatus = await serviceController.status()
+             enabledInSafari = try await extensionIsEnabled()
+-            agentStatus = try SafariSharedStorage.readStatus(in: container)
++            agentStatus = try await SafariSharedStorage.readStatusAsync(in: container)
+             agentReady = registrationStatus == .enabled
+                 && agentStatus?.isFresh() == true && agentStatus?.lastError == nil
+             if !enabledInSafari {
+@@ -181,8 +188,15 @@
+         isBusy = true
+         defer { isBusy = false }
+         do {
+-            _ = try SafariSharedStorage.containerURL()
+-            try await registerServiceIfNeeded()
++            let container = try await SafariSharedStorage.resolveContainer()
++            // Check Safari before restarting the service. Setup is an explicit
++            // retry, including when an older instance is still registered.
++            enabledInSafari = try await extensionIsEnabled()
++            guard enabledInSafari else { throw SafariProtectionError.extensionDisabled }
++            agentReady = false
++            agentStatus = nil
++            try await serviceController.prepare(in: container)
++            registrationStatus = await serviceController.status()
+             guard registrationStatus == .enabled else {
+                 if registrationStatus == .requiresApproval {
+                     throw SafariProtectionError.backgroundApprovalRequired
+@@ -190,9 +204,7 @@
+                 if registrationStatus == .notFound { throw SafariProtectionError.serviceNotFound }
+                 throw SafariProtectionError.agentUnavailable
+             }
+-            await refresh()
+-            guard enabledInSafari else { throw SafariProtectionError.extensionDisabled }
+-            let active = try BlockingService.readState().active
++            let active = try await Task.detached(priority: .utility) { try BlockingService.readState().active }.value
+             let expectedID = active.flatMap { $0.endsAt > Date().timeIntervalSince1970 ? $0.id : nil }
+             try await waitUntilApplied(sessionID: expectedID)
+             await refresh()
+@@ -202,14 +214,138 @@
+         }
+     }
+ 
+-    /// A .notFound status describes Service Management's lookup, not whether
+-    /// ForE.app exists. A first installation may need register() from this state.
+-    /// Only the explicit setup action may repair a stale registration.
+-    private func registerServiceIfNeeded() async throws {
++    /// Session preflight is read-only; background registration is the user's
++    /// separate setup action. Require both Safari enablement and a live agent.
++    func prepareForSession() async throws {
++        await refresh()
++        guard enabledInSafari else { throw SafariProtectionError.extensionDisabled }
++        guard registrationStatus == .enabled else {
++            if registrationStatus == .requiresApproval {
++                throw SafariProtectionError.backgroundApprovalRequired
++            }
++            if registrationStatus == .notFound { throw SafariProtectionError.serviceNotFound }
++            throw SafariProtectionError.agentUnavailable
++        }
++        guard agentReady else {
++            if let detail = agentStatus?.lastError { throw SafariProtectionError.agentFailed(detail) }
++            throw SafariProtectionError.agentUnavailable
++        }
++    }
++
++    /// Wait for a fresh acknowledgment of the intended state. A heartbeat alone
++    /// is insufficient: Safari must have accepted this session's compiled rules.
++    func waitUntilApplied(sessionID: UUID?, timeout: TimeInterval = SafariReloadTiming.setupTimeout) async throws {
++        let container = try await SafariSharedStorage.resolveContainer()
++        let deadline = ProcessInfo.processInfo.systemUptime + max(timeout, 0)
++        var nextRegistrationCheck: TimeInterval = 0
++        repeat {
++            try Task.checkCancellation()
++            if ProcessInfo.processInfo.systemUptime >= nextRegistrationCheck {
++                registrationStatus = await serviceController.status()
++                nextRegistrationCheck = ProcessInfo.processInfo.systemUptime + SafariReloadTiming.pollInterval
++            }
++            guard registrationStatus == .enabled else {
++                agentReady = false
++                if registrationStatus == .notFound { throw SafariProtectionError.serviceNotFound }
++                throw SafariProtectionError.agentUnavailable
++            }
++            let status = try await SafariSharedStorage.readStatusAsync(in: container)
++            agentStatus = status
++            if let status, status.isFresh() {
++                if let detail = status.lastError, detail != SafariAgentStatus.initializingMessage {
++                    agentReady = false
++                    throw SafariProtectionError.agentFailed(detail)
++                }
++                if status.lastError == nil, status.appliedSessionID == sessionID,
++                   status.appliedActive == (sessionID != nil) {
++                    agentReady = registrationStatus == .enabled
++                    return
++                }
++            }
++            try await Task.sleep(nanoseconds: 250_000_000)
++        } while ProcessInfo.processInfo.systemUptime < deadline
++        agentReady = false
++        if agentStatus?.isFresh() != true { throw SafariProtectionError.agentStartupTimedOut }
++        throw SafariProtectionError.timedOut
++    }
++
++    func openBackgroundSettings() {
++        SMAppService.openSystemSettingsLoginItems()
++    }
++
++    private func extensionIsEnabled() async throws -> Bool {
++        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
++            let completion = SafariStateCompletion(continuation)
++            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 8) {
++                completion.finish(.failure(SafariProtectionError.extensionStatusTimedOut))
++            }
++            DispatchQueue.global(qos: .utility).async {
++                SFContentBlockerManager.getStateOfContentBlocker(withIdentifier: SafariSharedStorage.extensionIdentifier) { state, error in
++                    if let error { completion.finish(.failure(error)) }
++                    else { completion.finish(.success(state?.isEnabled == true)) }
++                }
++            }
++        }
++    }
++}
++
++/// Service Management can perform synchronous bundle and launchd lookups.
++/// Keep those operations on this actor's executor, away from the UI actor.
++/// Merely reading status never registers, restarts, or approves a service.
++private actor SafariServiceController {
++    private static let agentPlistName = "de.fore.safari-agent.plist"
++    private var isPreparing = false
++
++    private var service: SMAppService {
++        SMAppService.agent(plistName: Self.agentPlistName)
++    }
++
++    func status() -> SMAppService.Status {
++        service.status
++    }
++
++    /// Only the user's explicit setup action calls this method. After a restart,
++    /// the old status is removed only once Service Management has completed the
++    /// old process's unregistration, before the replacement can publish status.
++    func prepare(in container: URL) async throws {
++        guard !isPreparing else { throw SafariProtectionError.agentUnavailable }
++        isPreparing = true
++        defer { isPreparing = false }
++
+         try validateAgentBundle()
+         let agent = service
+         let initialStatus = agent.status
+-        guard initialStatus == .notRegistered || initialStatus == .notFound else { return }
++        if initialStatus == .requiresApproval {
++            throw SafariProtectionError.backgroundApprovalRequired
++        }
++
++        let restarting = initialStatus == .enabled
++        if restarting {
++            do { try await unregisterService(agent) }
++            catch { throw registrationFailure(error, operation: "Hintergrundagent neu starten") }
++        }
++
++        // A stopped or never-registered instance can leave a final error file.
++        // Do not carry that error into the new process's readiness handshake.
++        if restarting || initialStatus == .notRegistered || initialStatus == .notFound {
++            do {
++                try FileManager.default.removeItem(
++                    at: container.appendingPathComponent(SafariSharedStorage.statusFilename))
++            } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
++                // No status is expected on a first installation.
++            }
++        }
++
++        try Task.checkCancellation()
++        try await registerServiceIfNeeded(agent, force: restarting)
++        try await waitUntilRegistered(agent)
++    }
++
++    /// .notFound describes Service Management's lookup, not whether ForE.app
++    /// exists. A first installation may need register() from this state.
++    private func registerServiceIfNeeded(_ agent: SMAppService, force: Bool) async throws {
++        let initialStatus = agent.status
++        guard force || initialStatus == .notRegistered || initialStatus == .notFound else { return }
+ 
+         do {
+             try agent.register()
+@@ -222,21 +358,13 @@
+                 throw registrationFailure(error, operation: "Registrierung")
+             }
+ 
+-            // Try normal registration first: unregistering a never-registered
+-            // service can itself fail. If registration failed from .notFound,
+-            // remove this service's stale record before one bounded retry.
++            // Try registration before removing a stale record: unregistering a
++            // never-registered service can itself fail. Only one retry is made.
+             let firstError = error
+             do {
+-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+-                    agent.unregister { error in
+-                        if let error { continuation.resume(throwing: error) }
+-                        else { continuation.resume() }
+-                    }
+-                }
++                try await unregisterService(agent)
+             } catch {
+                 let failure = error as NSError
+-                // Older SDKs do not expose the named error-domain constant.
+-                // Compare NSError's domain string without linking that symbol.
+                 guard failure.domain == "SMAppServiceErrorDomain",
+                       failure.code == kSMErrorJobNotFound else {
+                     throw registrationFailure(error, operation: "Alte Registrierung entfernen; erster Versuch: \(describe(firstError))")
+@@ -251,6 +379,39 @@
+                 }
+                 if agent.status == .enabled { return }
+                 throw registrationFailure(error, operation: "Erneute Registrierung")
++            }
++        }
++    }
++
++    /// register() may succeed before the public status reflects the change.
++    /// Allow a short bounded transition without ever bypassing user approval.
++    private func waitUntilRegistered(_ agent: SMAppService) async throws {
++        let deadline = ProcessInfo.processInfo.systemUptime + 5
++        repeat {
++            try Task.checkCancellation()
++            let current = agent.status
++            if current == .enabled { return }
++            if current == .requiresApproval {
++                throw SafariProtectionError.backgroundApprovalRequired
++            }
++            if current != .notRegistered && current != .notFound {
++                throw SafariProtectionError.agentUnavailable
++            }
++            try await Task.sleep(nanoseconds: 100_000_000)
++        } while ProcessInfo.processInfo.systemUptime < deadline
++
++        let current = agent.status
++        if current == .enabled { return }
++        if current == .requiresApproval { throw SafariProtectionError.backgroundApprovalRequired }
++        if current == .notFound { throw SafariProtectionError.serviceNotFound }
++        throw SafariProtectionError.agentUnavailable
++    }
++
++    private func unregisterService(_ agent: SMAppService) async throws {
++        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
++            agent.unregister { error in
++                if let error { continuation.resume(throwing: error) }
++                else { continuation.resume() }
+             }
+         }
+     }
+@@ -286,70 +447,4 @@
+     private func registrationFailure(_ error: Error, operation: String) -> SafariProtectionError {
+         .serviceRegistrationFailed("\(operation): \(describe(error)) App: \(Bundle.main.bundleURL.path)")
+     }
+-
+-    /// Session preflight is read-only; background registration is the user's
+-    /// separate setup action. Require both Safari enablement and a live agent.
+-    func prepareForSession() async throws {
+-        await refresh()
+-        guard enabledInSafari else { throw SafariProtectionError.extensionDisabled }
+-        guard registrationStatus == .enabled else {
+-            if registrationStatus == .requiresApproval {
+-                throw SafariProtectionError.backgroundApprovalRequired
+-            }
+-            if registrationStatus == .notFound { throw SafariProtectionError.serviceNotFound }
+-            throw SafariProtectionError.agentUnavailable
+-        }
+-        guard agentReady else {
+-            if let detail = agentStatus?.lastError { throw SafariProtectionError.agentFailed(detail) }
+-            throw SafariProtectionError.agentUnavailable
+-        }
+-    }
+-
+-    /// Wait for a fresh acknowledgment of the intended state. A heartbeat alone
+-    /// is insufficient: Safari must have accepted this session's compiled rules.
+-    func waitUntilApplied(sessionID: UUID?, timeout: TimeInterval = 15) async throws {
+-        let container = try SafariSharedStorage.containerURL()
+-        let deadline = ProcessInfo.processInfo.systemUptime + max(timeout, 0)
+-        repeat {
+-            try Task.checkCancellation()
+-            guard registrationStatus == .enabled else {
+-                agentReady = false
+-                if registrationStatus == .notFound { throw SafariProtectionError.serviceNotFound }
+-                throw SafariProtectionError.agentUnavailable
+-            }
+-            let status = try SafariSharedStorage.readStatus(in: container)
+-            agentStatus = status
+-            if let status, status.isFresh() {
+-                if let detail = status.lastError, detail != SafariAgentStatus.initializingMessage {
+-                    agentReady = false
+-                    throw SafariProtectionError.agentFailed(detail)
+-                }
+-                if status.lastError == nil, status.appliedSessionID == sessionID,
+-                   status.appliedActive == (sessionID != nil) {
+-                    agentReady = registrationStatus == .enabled
+-                    return
+-                }
+-            }
+-            try await Task.sleep(nanoseconds: 250_000_000)
+-        } while ProcessInfo.processInfo.systemUptime < deadline
+-        agentReady = false
+-        throw SafariProtectionError.timedOut
+-    }
+-
+-    func openBackgroundSettings() {
+-        SMAppService.openSystemSettingsLoginItems()
+-    }
+-
+-    private func extensionIsEnabled() async throws -> Bool {
+-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
+-            let completion = SafariStateCompletion(continuation)
+-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 8) {
+-                completion.finish(.failure(SafariProtectionError.extensionStatusTimedOut))
+-            }
+-            SFContentBlockerManager.getStateOfContentBlocker(withIdentifier: SafariSharedStorage.extensionIdentifier) { state, error in
+-                if let error { completion.finish(.failure(error)) }
+-                else { completion.finish(.success(state?.isEnabled == true)) }
+-            }
+-        }
+-    }
+-}
++}
+--- /dev/null
++++ b/ForE/Sources/ForECore/SafariAgentScheduler.swift
+@@ -0,0 +1,48 @@
++import Foundation
++import Dispatch
++
++/// Keeps heartbeats and reload bookkeeping independent of synchronous system
++/// API entry points. Only the state queue runs initialization, ticks and results.
++public final class SafariAgentScheduler: @unchecked Sendable {
++    private let stateQueue = DispatchQueue(label: "de.fore.safari-agent.state", qos: .utility)
++    private let requestQueue = DispatchQueue(label: "de.fore.safari-agent.requests", qos: .utility)
++    private var timer: DispatchSourceTimer?
++
++    public init() {}
++
++    public func start(interval: TimeInterval, initialize: @escaping () -> Void, tick: @escaping () -> Void) {
++        precondition(interval.isFinite && interval > 0, "The agent polling interval must be positive and finite.")
++        stateQueue.async {
++            guard self.timer == nil else { return }
++            initialize()
++            let source = DispatchSource.makeTimerSource(queue: self.stateQueue)
++            source.schedule(deadline: .now() + interval, repeating: interval)
++            source.setEventHandler(handler: tick)
++            self.timer = source
++            source.resume()
++            // The timer is live before any first-tick system request starts.
++            tick()
++        }
++    }
++
++    public func performRequest(_ work: @escaping () -> Void) {
++        requestQueue.async { work() }
++    }
++
++    public func receiveResult(_ work: @escaping () -> Void) {
++        stateQueue.async { work() }
++    }
++
++    public func stop() {
++        stateQueue.async {
++            self.timer?.setEventHandler {}
++            self.timer?.cancel()
++            self.timer = nil
++        }
++    }
++
++    deinit {
++        timer?.setEventHandler {}
++        timer?.cancel()
++    }
++}
+--- a/ForE/Sources/ForECore/SafariRuleReceipt.swift
++++ b/ForE/Sources/ForECore/SafariRuleReceipt.swift
+@@ -13,4 +13,76 @@
+         self.generatedAt = generatedAt
+         self.readError = readError
+     }
++
++    public func confirms(_ attempt: SafariReloadAttempt) -> Bool {
++        readError == nil && snapshot == attempt.snapshot
++            && generatedAt >= attempt.startedAt.addingTimeInterval(-1)
++    }
+ }
++
++/// The UI must allow the agent to observe and report its callback deadline.
++public enum SafariReloadTiming {
++    public static let pollInterval: TimeInterval = 3
++    public static let callbackTimeout: TimeInterval = 30
++    public static let setupTimeout = callbackTimeout + 2 * pollInterval + 5
++}
++
++public struct SafariReloadAttempt {
++    public let id: UUID
++    public let snapshot: SafariRuleSet
++    public let startedAt: Date
++    public let startedUptime: TimeInterval
++}
++
++/// Serializes reloads and rejects callbacks belonging to an abandoned request.
++/// Failed snapshots wait for an explicit retry or a state change, rather than
++/// repeatedly restarting the process and losing the useful error.
++public struct SafariReloadState {
++    public private(set) var pending: SafariReloadAttempt?
++    public private(set) var applied: SafariRuleSet?
++    public private(set) var failed: SafariRuleSet?
++
++    public init() {}
++
++    public func shouldReload(_ snapshot: SafariRuleSet) -> Bool {
++        pending == nil && applied != snapshot && failed != snapshot
++    }
++
++    public mutating func begin(_ snapshot: SafariRuleSet, now: Date, uptime: TimeInterval) -> SafariReloadAttempt? {
++        guard shouldReload(snapshot) else { return nil }
++        let attempt = SafariReloadAttempt(id: UUID(), snapshot: snapshot, startedAt: now, startedUptime: uptime)
++        applied = nil
++        failed = nil
++        pending = attempt
++        return attempt
++    }
++
++    @discardableResult
++    public mutating func expire(uptime: TimeInterval) -> Bool {
++        guard let attempt = pending,
++              uptime - attempt.startedUptime >= SafariReloadTiming.callbackTimeout else { return false }
++        failed = attempt.snapshot
++        pending = nil
++        return true
++    }
++
++    @discardableResult
++    public mutating func complete(id: UUID, succeeded: Bool) -> Bool {
++        guard let attempt = pending, attempt.id == id else { return false }
++        applied = succeeded ? attempt.snapshot : nil
++        failed = succeeded ? nil : attempt.snapshot
++        pending = nil
++        return true
++    }
++
++    public mutating func retryFailed() {
++        failed = nil
++    }
++
++    /// A timed-out Safari request is uncancellable and may still change the
++    /// compiled list. Reapply the current rules after its late callback.
++    public mutating func invalidateApplied() {
++        applied = nil
++        failed = nil
++    }
++}
+--- a/ForE/Tests/ForECoreTests/SafariRulesTests.swift
++++ b/ForE/Tests/ForECoreTests/SafariRulesTests.swift
+@@ -116,6 +116,186 @@
+     func testExcessiveActiveDomainListIsRejected() {
+         XCTAssertThrowsError(try SafariRules.jsonData(domains: Array(repeating: "youtube.com", count: 201),
+                                                      activeUntil: now.addingTimeInterval(60), now: now))
++    }
++
++    func testSlowInitialReloadCanCompleteAfterTheFormerFifteenSecondDeadline() throws {
++        var state = SafariReloadState()
++        let inactive = SafariRuleSet()
++        let attempt = try XCTUnwrap(state.begin(inactive, now: now, uptime: 100))
++
++        XCTAssertFalse(state.expire(uptime: 120))
++        XCTAssertLessThan(20, SafariReloadTiming.setupTimeout)
++        XCTAssertTrue(state.complete(id: attempt.id, succeeded: true))
++        XCTAssertEqual(state.applied, inactive)
++        XCTAssertNil(state.failed)
++        XCTAssertNil(state.pending)
++        XCTAssertFalse(state.shouldReload(inactive), "A confirmed snapshot needs no second compilation")
++    }
++
++    func testMissingCallbackFailsBeforeSetupDeadlineAndWaitsForRetryAuthorization() throws {
++        var state = SafariReloadState()
++        let active = SafariRuleSet(domains: ["youtube.com"], activeUntil: now.addingTimeInterval(600), sessionID: UUID())
++        _ = try XCTUnwrap(state.begin(active, now: now, uptime: 100))
++
++        XCTAssertFalse(state.expire(uptime: 129.999))
++        XCTAssertTrue(state.expire(uptime: 130))
++        XCTAssertGreaterThan(SafariReloadTiming.setupTimeout,
++                             SafariReloadTiming.callbackTimeout + SafariReloadTiming.pollInterval,
++                             "The UI must allow the next agent tick to publish the timeout")
++        XCTAssertEqual(state.failed, active)
++        XCTAssertNil(state.pending)
++        XCTAssertNil(state.applied)
++        XCTAssertFalse(state.expire(uptime: 160))
++        XCTAssertNil(state.begin(active, now: now.addingTimeInterval(60), uptime: 160),
++                     "Elapsed time alone must not bypass the worker's retry backoff")
++    }
++
++    func testLateActiveCallbackCannotCompleteANewerReleaseRequest() throws {
++        var state = SafariReloadState()
++        let active = SafariRuleSet(domains: ["youtube.com"], activeUntil: now.addingTimeInterval(600), sessionID: UUID())
++        let expired = try XCTUnwrap(state.begin(active, now: now, uptime: 100))
++        XCTAssertTrue(state.expire(uptime: 130))
++
++        let inactive = SafariRuleSet()
++        let release = try XCTUnwrap(state.begin(inactive, now: now.addingTimeInterval(31), uptime: 131))
++        XCTAssertNotEqual(expired.id, release.id)
++        XCTAssertFalse(state.complete(id: expired.id, succeeded: true))
++        XCTAssertFalse(state.complete(id: expired.id, succeeded: false))
++        XCTAssertEqual(state.pending?.id, release.id)
++        XCTAssertNil(state.applied)
++        XCTAssertNil(state.failed)
++
++        XCTAssertTrue(state.complete(id: release.id, succeeded: true))
++        XCTAssertEqual(state.applied, inactive, "Only the current callback may confirm that Safari released the sites")
++        XCTAssertFalse(state.complete(id: expired.id, succeeded: true))
++        XCTAssertEqual(state.applied, inactive)
++    }
++
++    func testLateCallbackInvalidatesAConfirmedReleaseAndSchedulesFreshInactiveRules() throws {
++        var state = SafariReloadState()
++        let active = SafariRuleSet(domains: ["youtube.com"], activeUntil: now.addingTimeInterval(600), sessionID: UUID())
++        let old = try XCTUnwrap(state.begin(active, now: now, uptime: 100))
++        XCTAssertTrue(state.expire(uptime: 130))
++        let inactive = SafariRuleSet()
++        let release = try XCTUnwrap(state.begin(inactive, now: now.addingTimeInterval(31), uptime: 131))
++        XCTAssertTrue(state.complete(id: release.id, succeeded: true))
++        XCTAssertFalse(state.shouldReload(inactive))
++
++        XCTAssertFalse(state.complete(id: old.id, succeeded: true))
++        // The framework request cannot be cancelled. A late callback may mean
++        // Safari changed compiled rules after the release was acknowledged.
++        state.invalidateApplied()
++        XCTAssertNil(state.applied)
++        XCTAssertTrue(state.shouldReload(inactive))
++        let freshRelease = try XCTUnwrap(state.begin(inactive, now: now.addingTimeInterval(40), uptime: 140))
++        XCTAssertTrue(state.complete(id: freshRelease.id, succeeded: true))
++        XCTAssertEqual(state.applied, inactive)
++    }
++
++    func testLateCallbackInvalidationPreservesAnAlreadyPendingRelease() throws {
++        var state = SafariReloadState()
++        let active = SafariRuleSet(domains: ["youtube.com"], activeUntil: now.addingTimeInterval(600), sessionID: UUID())
++        let old = try XCTUnwrap(state.begin(active, now: now, uptime: 100))
++        XCTAssertTrue(state.expire(uptime: 130))
++        let inactive = SafariRuleSet()
++        let release = try XCTUnwrap(state.begin(inactive, now: now.addingTimeInterval(31), uptime: 131))
++
++        XCTAssertFalse(state.complete(id: old.id, succeeded: true))
++        state.invalidateApplied()
++        XCTAssertEqual(state.pending?.id, release.id)
++        XCTAssertFalse(state.shouldReload(inactive), "Do not overlap a second release with the pending one")
++        XCTAssertNil(state.applied)
++        XCTAssertTrue(state.complete(id: release.id, succeeded: true))
++        XCTAssertEqual(state.applied, inactive)
++    }
++
++    func testFailedActiveReloadStillAllowsTheSessionToBeReleased() throws {
++        var state = SafariReloadState()
++        let active = SafariRuleSet(domains: ["youtube.com"], activeUntil: now.addingTimeInterval(600), sessionID: UUID())
++        let attempt = try XCTUnwrap(state.begin(active, now: now, uptime: 100))
++        XCTAssertTrue(state.complete(id: attempt.id, succeeded: false))
++        XCTAssertFalse(state.shouldReload(active))
++
++        let inactive = SafariRuleSet()
++        XCTAssertTrue(state.shouldReload(inactive))
++        let release = try XCTUnwrap(state.begin(inactive, now: now.addingTimeInterval(1), uptime: 101))
++        XCTAssertTrue(state.complete(id: release.id, succeeded: true))
++        XCTAssertEqual(state.applied, inactive)
++        XCTAssertNil(state.failed)
++    }
++
++    func testExplicitSetupResetAllowsRetryingAFailedSnapshot() throws {
++        var state = SafariReloadState()
++        let inactive = SafariRuleSet()
++        let first = try XCTUnwrap(state.begin(inactive, now: now, uptime: 100))
++        XCTAssertTrue(state.complete(id: first.id, succeeded: false))
++        XCTAssertNil(state.begin(inactive, now: now.addingTimeInterval(10), uptime: 110))
++
++        // Setup can start a new state without accepting the old callback.
++        state = SafariReloadState()
++        let retry = try XCTUnwrap(state.begin(inactive, now: now.addingTimeInterval(11), uptime: 111))
++        XCTAssertNotEqual(first.id, retry.id)
++        XCTAssertFalse(state.complete(id: first.id, succeeded: true))
++        XCTAssertEqual(state.pending?.id, retry.id)
++        XCTAssertTrue(state.complete(id: retry.id, succeeded: true))
++        XCTAssertEqual(state.applied, inactive)
++    }
++
++    func testBackoffRetryCanReleaseInactiveRulesWithoutAcceptingTheExpiredCallback() throws {
++        var state = SafariReloadState()
++        let inactive = SafariRuleSet()
++        let expired = try XCTUnwrap(state.begin(inactive, now: now, uptime: 100))
++        XCTAssertTrue(state.expire(uptime: 130))
++        XCTAssertNil(state.begin(inactive, now: now.addingTimeInterval(59), uptime: 159))
++
++        // The worker authorizes another attempt after its backoff, even when
++        // the UI is closed. A transient failure must not strand compiled blocks.
++        state.retryFailed()
++        let retry = try XCTUnwrap(state.begin(inactive, now: now.addingTimeInterval(60), uptime: 160))
++        XCTAssertNotEqual(expired.id, retry.id)
++        XCTAssertFalse(state.complete(id: expired.id, succeeded: true))
++        XCTAssertEqual(state.pending?.id, retry.id)
++        XCTAssertNil(state.applied)
++        XCTAssertTrue(state.complete(id: retry.id, succeeded: true))
++        XCTAssertEqual(state.applied, inactive)
++        XCTAssertNil(state.failed)
++    }
++
++    func testNoOverlappingReloadIsStartedEvenWhenTheDesiredSessionChanges() throws {
++        var state = SafariReloadState()
++        let active = SafariRuleSet(domains: ["youtube.com"], activeUntil: now.addingTimeInterval(600), sessionID: UUID())
++        let attempt = try XCTUnwrap(state.begin(active, now: now, uptime: 100))
++
++        XCTAssertNil(state.begin(active, now: now.addingTimeInterval(1), uptime: 101))
++        XCTAssertNil(state.begin(SafariRuleSet(), now: now.addingTimeInterval(2), uptime: 102))
++        XCTAssertEqual(state.pending?.id, attempt.id)
++        XCTAssertTrue(state.complete(id: attempt.id, succeeded: true))
++        XCTAssertNotNil(state.begin(SafariRuleSet(), now: now.addingTimeInterval(3), uptime: 103))
++        XCTAssertNil(state.applied, "Starting a new compilation invalidates the previous acknowledgment")
++    }
++
++    func testReceiptRequiresTheExactFreshSnapshotWithoutAReadError() throws {
++        var state = SafariReloadState()
++        let active = SafariRuleSet(domains: ["youtube.com"], activeUntil: now.addingTimeInterval(600), sessionID: UUID())
++        let attempt = try XCTUnwrap(state.begin(active, now: now, uptime: 100))
++        let receipt = SafariRuleReceipt(snapshot: active, generatedAt: now.addingTimeInterval(20))
++        let decoded = try JSONDecoder().decode(SafariRuleReceipt.self, from: JSONEncoder().encode(receipt))
++        XCTAssertTrue(decoded.confirms(attempt))
++        XCTAssertTrue(SafariRuleReceipt(snapshot: active, generatedAt: now.addingTimeInterval(-1)).confirms(attempt))
++        XCTAssertFalse(SafariRuleReceipt(snapshot: active, generatedAt: now.addingTimeInterval(-2)).confirms(attempt),
++                       "A previous extension request cannot confirm the current reload")
++        XCTAssertFalse(SafariRuleReceipt(snapshot: active, generatedAt: now, readError: "App Group unreadable").confirms(attempt))
++        XCTAssertFalse(SafariRuleReceipt(snapshot: SafariRuleSet(), generatedAt: now).confirms(attempt))
++
++        var changed = active
++        changed.domains = ["reddit.com"]
++        XCTAssertFalse(SafariRuleReceipt(snapshot: changed, generatedAt: now).confirms(attempt))
++        changed = active
++        changed.activeUntil = now.addingTimeInterval(601)
++        XCTAssertFalse(SafariRuleReceipt(snapshot: changed, generatedAt: now).confirms(attempt))
++        changed = active
++        changed.sessionID = UUID()
++        XCTAssertFalse(SafariRuleReceipt(snapshot: changed, generatedAt: now).confirms(attempt))
+     }
+ 
+     #if canImport(WebKit)
+@@ -153,3 +333,137 @@
+     }
+     #endif
+ }
++
++final class SafariAgentSchedulerTests: XCTestCase {
++    func testInitializationPrecedesTheFirstSystemRequestAndRunsOffMainThread() {
++        let scheduler = SafariAgentScheduler()
++        let events = SchedulerTestEvents()
++        let requested = expectation(description: "The first system request sees the initializing heartbeat")
++        defer { scheduler.stop() }
++
++        scheduler.start(interval: 60, initialize: {
++            XCTAssertFalse(Thread.isMainThread)
++            events.append("initializing")
++        }, tick: {
++            XCTAssertFalse(Thread.isMainThread)
++            events.append("tick")
++            scheduler.performRequest {
++                XCTAssertFalse(Thread.isMainThread)
++                events.append("request")
++                XCTAssertEqual(events.snapshot(), ["initializing", "tick", "request"])
++                requested.fulfill()
++            }
++        })
++
++        wait(for: [requested], timeout: 2)
++    }
++
++    func testBlockedSystemRequestDoesNotPreventHeartbeatsOrStateResults() {
++        let scheduler = SafariAgentScheduler()
++        let gate = DispatchSemaphore(value: 0)
++        let events = SchedulerTestEvents()
++        let requestEntered = expectation(description: "A synchronous system API entry is blocked")
++        let heartbeats = expectation(description: "Heartbeats continue while the request is blocked")
++        heartbeats.expectedFulfillmentCount = 3
++        let stateResult = expectation(description: "State results still run during the blocked request")
++        let requestExited = expectation(description: "The deliberately blocked test request is released")
++        defer {
++            gate.signal()
++            wait(for: [requestExited], timeout: 2)
++            scheduler.stop()
++        }
++
++        scheduler.start(interval: 0.01, initialize: {}, tick: {
++            if events.markFirstTick() {
++                scheduler.performRequest {
++                    events.setRequestBlocked(true)
++                    requestEntered.fulfill()
++                    gate.wait()
++                    events.setRequestBlocked(false)
++                    requestExited.fulfill()
++                }
++            } else if events.recordHeartbeatWhileBlocked() {
++                XCTAssertFalse(Thread.isMainThread)
++                heartbeats.fulfill()
++            }
++        })
++
++        wait(for: [requestEntered], timeout: 2)
++        scheduler.receiveResult {
++            XCTAssertFalse(Thread.isMainThread)
++            XCTAssertTrue(events.isRequestBlocked())
++            stateResult.fulfill()
++        }
++        wait(for: [heartbeats, stateResult], timeout: 2)
++    }
++
++    func testResultCallbacksShareOrderedStateWithInitializationAndTicks() {
++        let scheduler = SafariAgentScheduler()
++        let finished = expectation(description: "Every result updates the serial agent state in order")
++        var nextResult = -1
++        defer { scheduler.stop() }
++
++        scheduler.start(interval: 60, initialize: {
++            nextResult = 0
++        }, tick: {
++            XCTAssertEqual(nextResult, 0)
++        })
++        for index in 0..<100 {
++            scheduler.receiveResult {
++                XCTAssertFalse(Thread.isMainThread)
++                XCTAssertEqual(nextResult, index)
++                nextResult += 1
++                if index == 99 { finished.fulfill() }
++            }
++        }
++        wait(for: [finished], timeout: 2)
++    }
++}
++
++private final class SchedulerTestEvents: @unchecked Sendable {
++    private let lock = NSLock()
++    private var values: [String] = []
++    private var firstTick = true
++    private var blocked = false
++    private var heartbeatCount = 0
++
++    func append(_ value: String) {
++        lock.lock()
++        defer { lock.unlock() }
++        values.append(value)
++    }
++
++    func snapshot() -> [String] {
++        lock.lock()
++        defer { lock.unlock() }
++        return values
++    }
++
++    func markFirstTick() -> Bool {
++        lock.lock()
++        defer { lock.unlock() }
++        guard firstTick else { return false }
++        firstTick = false
++        return true
++    }
++
++    func setRequestBlocked(_ value: Bool) {
++        lock.lock()
++        defer { lock.unlock() }
++        blocked = value
++    }
++
++    func isRequestBlocked() -> Bool {
++        lock.lock()
++        defer { lock.unlock() }
++        return blocked
++    }
++
++    func recordHeartbeatWhileBlocked() -> Bool {
++        lock.lock()
++        defer { lock.unlock() }
++        guard blocked, heartbeatCount < 3 else { return false }
++        heartbeatCount += 1
++        return true
++    }
++}
